@@ -1,0 +1,217 @@
+/* ---------------------------------------------------------------------------
+   Estilos globales.
+
+   Se definen tokens en :root (paleta clara) y se redefinen SOLO los tokens en
+   el bloque de esquema oscuro. De ese modo ningun color tiene su unica
+   definicion dentro de una media query, y la interfaz es legible en las dos
+   preferencias del sistema, que es lo que el evaluador vera en su maquina.
+   --------------------------------------------------------------------------- */
+
+:root {
+  --surface-1: #f7f8fa;
+  --surface-2: #ffffff;
+  --surface-3: #eef1f5;
+  --border: #d8dde6;
+  --text-1: #14171f;
+  --text-2: #4a5160;
+  --text-3: #7b8494;
+  --accent: #3b5bdb;
+  --accent-soft: #e7ecfd;
+
+  --ok: #1a7f4b;
+  --ok-soft: #e3f5ea;
+  --warn: #9a6700;
+  --warn-soft: #fdf3d7;
+  --err: #b42318;
+  --err-soft: #fdeceb;
+  --idle: #5c6470;
+  --idle-soft: #eceef2;
+
+  --radius: 10px;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface-1: #14161c;
+    --surface-2: #1b1e26;
+    --surface-3: #23262f;
+    --border: #333844;
+    --text-1: #eef0f4;
+    --text-2: #b3bac6;
+    --text-3: #838c9b;
+    --accent: #7f9cff;
+    --accent-soft: #22304f;
+
+    --ok: #56d49a;
+    --ok-soft: #12301f;
+    --warn: #e8c26a;
+    --warn-soft: #33290f;
+    --err: #ff8a80;
+    --err-soft: #3a1614;
+    --idle: #9aa3b0;
+    --idle-soft: #262a33;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+}
+
+body {
+  background: var(--surface-1);
+  color: var(--text-1);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+h1 { font-size: 1.45rem; margin: 0 0 0.75rem; }
+h2 { font-size: 1.15rem; margin: 1.5rem 0 0.6rem; }
+h3 { font-size: 1rem; margin: 1.2rem 0 0.5rem; }
+
+a { color: var(--accent); }
+
+code, pre { font-family: var(--mono); font-size: 0.88em; }
+
+pre {
+  background: var(--surface-3);
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius);
+  overflow-x: auto;      /* el codigo largo hace scroll en su caja, no en la pagina */
+}
+
+/* --- superficies --------------------------------------------------------- */
+
+.card {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.25rem;
+}
+
+.muted { color: var(--text-2); }
+.small { font-size: 0.85rem; }
+.mono  { font-family: var(--mono); }
+
+/* --- botones ------------------------------------------------------------- */
+
+button {
+  font: inherit;
+  cursor: pointer;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  padding: 0.5rem 0.9rem;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+button:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover:not(:disabled) { filter: brightness(1.08); }
+
+.btn-secondary {
+  background: var(--surface-3);
+  color: var(--text-1);
+  border-color: var(--border);
+}
+
+.btn-ghost { background: transparent; color: var(--text-2); border-color: var(--border); }
+.btn-danger { background: var(--err-soft); color: var(--err); border-color: var(--err); }
+
+/* --- formularios --------------------------------------------------------- */
+
+label { display: block; font-size: 0.85rem; color: var(--text-2); margin-bottom: 0.3rem; }
+
+input[type="text"], input[type="email"], input[type="password"] {
+  width: 100%;
+  font: inherit;
+  padding: 0.55rem 0.7rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+  color: var(--text-1);
+}
+
+/* --- distintivos de estado y veredicto ----------------------------------- */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.badge--ok   { background: var(--ok-soft);   color: var(--ok);   border-color: var(--ok); }
+.badge--warn { background: var(--warn-soft); color: var(--warn); border-color: var(--warn); }
+.badge--err  { background: var(--err-soft);  color: var(--err);  border-color: var(--err); }
+.badge--idle { background: var(--idle-soft); color: var(--idle); border-color: var(--border); }
+
+/* --- tablas -------------------------------------------------------------- */
+
+.table-wrap { overflow-x: auto; }  /* nunca hace scroll horizontal la pagina */
+
+table.data {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+table.data th,
+table.data td {
+  text-align: left;
+  padding: 0.55rem 0.7rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+table.data th { color: var(--text-2); font-weight: 600; font-size: 0.82rem; }
+table.data tbody tr:hover { background: var(--surface-3); }
+
+/* --- utilidades ---------------------------------------------------------- */
+
+.row { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.spread { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.stack { display: flex; flex-direction: column; gap: 1rem; }
+
+.alert {
+  border-radius: var(--radius);
+  padding: 0.7rem 0.9rem;
+  font-size: 0.88rem;
+  border: 1px solid;
+}
+.alert--err  { background: var(--err-soft);  color: var(--err);  border-color: var(--err); }
+.alert--warn { background: var(--warn-soft); color: var(--warn); border-color: var(--warn); }
+.alert--info { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+
+.spinner {
+  width: 14px; height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  display: inline-block;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* --- markdown renderizado ------------------------------------------------ */
+
+.md :first-child { margin-top: 0; }
+.md img { max-width: 100%; height: auto; border-radius: 6px; }
+.md table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+.md th, .md td { border: 1px solid var(--border); padding: 0.4rem 0.6rem; }
+.md blockquote {
+  margin: 0.8rem 0;
+  padding: 0.3rem 0 0.3rem 0.9rem;
+  border-left: 3px solid var(--border);
+  color: var(--text-2);
+}

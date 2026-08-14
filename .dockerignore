@@ -1,0 +1,27 @@
+# OJO: NO excluir *.md.
+# El proyecto usa go:embed sobre ficheros .sql y los tests comparan bundles
+# Markdown de testdata/. Excluir *.md haria que el build funcionase en el host y
+# fallase SOLO dentro del contenedor, que es el modo de fallo mas difícil de
+# diagnosticar.
+
+.git
+.gitignore
+.env
+.env.local
+
+frontend/node_modules
+frontend/dist
+frontend/.angular
+
+docs/
+*.png
+*.jpg
+*.pdf
+
+bin/
+out/
+*.exe
+coverage.out
+
+.idea/
+.vscode/

@@ -1,0 +1,11 @@
+INFORME CON CODIFICACION CORRUPTA
+
+Este documento contiene bytes que no forman UTF-8 valido, lo que hace que el
+bundle generado no supere la validacion de codificacion y por tanto NO se
+publique. Es un caso de fallo real y no una inyeccion artificial.
+
+1. SECCION AFECTADA
+
+La linea siguiente lleva los bytes invalidos: ˇ˛ÄÅ√(
+
+Fin del documento.

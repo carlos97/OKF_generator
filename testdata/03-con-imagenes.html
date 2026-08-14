@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>Documento HTML con recursos embebidos</title>
+  <style>body { font-family: sans-serif; }</style>
+</head>
+<body>
+
+<!-- Elementos que la conversion debe descartar: no son contenido del documento.
+     Se incluyen a proposito para demostrarlo en la sustentacion. -->
+<nav><a href="/">Inicio</a> · <a href="/ayuda">Ayuda</a></nav>
+<script>alert('esto nunca debe llegar al bundle');</script>
+
+<main>
+  <h1>Documento HTML con recursos embebidos</h1>
+
+  <p>
+    Este documento comprueba tres cosas a la vez: el soporte de un segundo
+    formato de entrada, la extraccion de recursos embebidos a <code>assets/</code>
+    y la eliminacion del marcado que no es contenido.
+  </p>
+
+  <h2>Recursos embebidos como data URI</h2>
+
+  <p>
+    La imagen siguiente viaja dentro del propio HTML como <code>data:</code> URI.
+    Debe acabar como un fichero real en <code>assets/</code>, nombrado por el hash
+    de su contenido, y la referencia del Markdown debe apuntar a esa ruta
+    relativa.
+  </p>
+
+  <p>
+    <img alt="Pixel de prueba"
+         src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAIAQMAAAD+wSzIAAAABlBMVEX///+/v7+jQ3Y5AAAADklEQVQI12P4AIX8EAgALgAD/aNpbtEAAAAASUVORK5CYII=">
+  </p>
+
+  <h2>Contenido estructurado</h2>
+
+  <p>El conversor debe preservar el orden y las estructuras basicas:</p>
+
+  <ul>
+    <li>Listas no ordenadas</li>
+    <li>Texto en <strong>negrita</strong> y en <em>cursiva</em></li>
+    <li>Fragmentos de <code>codigo en linea</code></li>
+  </ul>
+
+  <table>
+    <thead><tr><th>Formato</th><th>Estructura</th></tr></thead>
+    <tbody>
+      <tr><td>Markdown</td><td>Explicita</td></tr>
+      <tr><td>HTML</td><td>Explicita</td></tr>
+      <tr><td>Texto plano</td><td>Inferida</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Marcado peligroso</h2>
+
+  <p>
+    Este enlace usa un esquema que no debe sobrevivir a la conversion:
+    <a href="javascript:alert('xss')">enlace hostil</a>.
+  </p>
+
+  <p>
+    Y esta imagen intenta ejecutar codigo al fallar la carga:
+    <img src="no-existe.png" onerror="alert('xss')" alt="imagen inexistente">
+  </p>
+</main>
+
+<footer>Pie de pagina que tampoco es contenido del documento.</footer>
+
+</body>
+</html>

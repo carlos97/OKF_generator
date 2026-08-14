@@ -1,0 +1,9 @@
+{
+  "//": "Solo para 'ng serve' en desarrollo. En produccion el proxy lo hace nginx dentro de la propia imagen del frontend, y el SPA usa rutas relativas /api en ambos casos: asi no hay environment.ts que recompilar por entorno ni CORS que configurar.",
+  "/api": {
+    "target": "http://localhost:8081",
+    "secure": false,
+    "changeOrigin": false,
+    "logLevel": "debug"
+  }
+}

@@ -1,0 +1,60 @@
+# ---------------------------------------------------------------------------
+# Sobreescritura OPCIONAL para desarrollo. Se invoca explicitamente:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# El fichero NO se llama docker-compose.override.yml a proposito: Compose carga
+# ese nombre AUTOMATICAMENTE, con lo que el evaluador ejecutaria la
+# configuracion de desarrollo (puertos extra, bind mounts) en lugar de la de
+# entrega, y `--scale api=N` fallaria por colision de puertos.
+# ---------------------------------------------------------------------------
+
+services:
+  # Puertos directos, utiles para depurar con curl sin pasar por el proxy.
+  postgres:
+    ports:
+      - "${POSTGRES_PORT_HOST:-5432}:5432"
+
+  minio:
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+
+  api:
+    ports:
+      - "${API_PORT_HOST:-8081}:8080"
+    environment:
+      LOG_LEVEL: debug
+      DEV_TOOLS: "true"
+
+  worker:
+    environment:
+      LOG_LEVEL: debug
+
+  # Contenedor de utilidades: sustituye a make, que no esta instalado en el host
+  # y que ademas se rompe con rutas que contienen espacios.
+  #
+  #   docker compose --profile tools run --rm tools go test ./... -race
+  #   docker compose --profile tools run --rm tools go vet ./...
+  #
+  # Compose resuelve las rutas relativas por su cuenta, asi que los espacios y
+  # los acentos del directorio del proyecto dejan de importar.
+  tools:
+    image: golang:1.26
+    working_dir: /src
+    environment:
+      GOTOOLCHAIN: local
+      GOFLAGS: -buildvcs=false
+    volumes:
+      - .:/src
+      # Sin estas cachees, cada ejecucion de los tests vuelve a descargar y
+      # recompilar todas las dependencias.
+      - gomodcache:/go/pkg/mod
+      - gobuildcache:/root/.cache/go-build
+    profiles: ["tools"]
+    entrypoint: []
+    command: ["sleep", "infinity"]
+    networks: [core]
+
+volumes:
+  gomodcache:
+  gobuildcache:

@@ -1,0 +1,25 @@
+# Normalizacion de fin de linea. OBLIGATORIO en el primer commit:
+# el host es Windows con core.autocrlf=true y cualquier script con CRLF
+# falla dentro de los contenedores Linux con "no such file or directory".
+* text=auto eol=lf
+
+*.sh   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.md   text eol=lf
+*.sql  text eol=lf
+*.go   text eol=lf
+
+Dockerfile      text eol=lf
+*.dockerfile    text eol=lf
+.env.example    text eol=lf
+
+# Los ficheros de prueba se comparan byte a byte contra los golden bundles:
+# nunca deben ser tocados por la normalizacion.
+testdata/** -text
+
+*.png binary
+*.jpg binary
+*.docx binary
+*.pdf binary
+*.zip binary

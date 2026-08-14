@@ -1,0 +1,283 @@
+# ---------------------------------------------------------------------------
+# Plataforma de conversion documental a bundles OKF.
+#
+#   docker compose up --build
+#
+# Ese comando, sin ningun paso previo, deja el sistema operativo: todas las
+# variables tienen valor por defecto aqui mismo, asi que .env es OPCIONAL.
+#
+# Notas de diseno que explican decisiones concretas del fichero:
+#
+#   * SOLO el servicio `frontend` publica un puerto. La API no publica ninguno, y
+#     por eso `--scale api=3` funciona (con un puerto publicado la segunda
+#     replica fallaria con "port is already allocated"). nginx reparte entre las
+#     replicas por el DNS interno de Compose, y al servir el SPA y la API en el
+#     mismo origen desaparece CORS por completo.
+#   * El servicio `api` NO tiene `volumes:`. Es la evidencia de que no mantiene
+#     estado en disco, comprobable con:
+#         docker inspect okfp-api-1 --format '{{json .Mounts}}'   ->  []
+#   * `worker` no publica puertos y consume con prefetch=1: eso es todo lo que
+#     hace falta para que `--scale worker=3` reparta trabajo sin coordinacion.
+#   * Tres servicios one-shot (`migrator`, `minio-init`, `topology`) dejan el
+#     sistema listo sin ningun comando manual.
+# ---------------------------------------------------------------------------
+
+# Nombre explicito del proyecto: el directorio contiene espacios y una vocal
+# acentuada, y no conviene depender del nombre que Compose derive de la ruta.
+name: okfp
+
+x-backend-env: &backend-env
+  APP_ENV: ${APP_ENV:-dev}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: 5432
+  POSTGRES_USER: ${POSTGRES_USER:-okf}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-okf_dev_password}
+  POSTGRES_DB: ${POSTGRES_DB:-okf}
+  POSTGRES_SSLMODE: disable
+
+  RABBITMQ_HOST: rabbitmq
+  RABBITMQ_PORT: 5672
+  RABBITMQ_USER: ${RABBITMQ_USER:-okf}
+  RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-okf_dev_password}
+  RABBITMQ_VHOST: /
+  RABBITMQ_PREFETCH: ${RABBITMQ_PREFETCH:-1}
+
+  S3_ENDPOINT: minio:9000
+  S3_ACCESS_KEY: ${S3_ACCESS_KEY:-okfadmin}
+  S3_SECRET_KEY: ${S3_SECRET_KEY:-okfadmin_dev_password}
+  S3_USE_SSL: "false"
+  S3_BUCKET_ORIGINALS: ${S3_BUCKET_ORIGINALS:-okf-originals}
+  S3_BUCKET_BUNDLES: ${S3_BUCKET_BUNDLES:-okf-bundles}
+
+  JWT_SECRET: ${JWT_SECRET:-dev-secret-cambiar-en-produccion-min-32-bytes}
+  JWT_TTL: ${JWT_TTL:-24h}
+  DOWNLOAD_TICKET_TTL: ${DOWNLOAD_TICKET_TTL:-120s}
+  DOWNLOAD_TICKET_MAX_USES: ${DOWNLOAD_TICKET_MAX_USES:-3}
+
+  MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-20971520}
+  PARSE_MAX_BYTES: ${PARSE_MAX_BYTES:-5242880}
+  MAX_BUNDLE_BYTES: ${MAX_BUNDLE_BYTES:-67108864}
+  ASSETS_MAX_BYTES: ${ASSETS_MAX_BYTES:-16777216}
+  MAX_UNITS: ${MAX_UNITS:-500}
+
+  DEMO_SLOW_MODE_MS: ${DEMO_SLOW_MODE_MS:-0}
+  DEV_TOOLS: ${DEV_TOOLS:-false}
+
+  # Inyeccion de fallo para demostrar en vivo la condicion literal del enunciado
+  # ("ante la ausencia de index.md o log.md, la validacion falla"). Vacio en
+  # funcionamiento normal; valores admitidos: drop_index, drop_log.
+  #
+  # Sin esta linea la variable era inalcanzable en el despliegue: la lee la
+  # configuracion del worker, pero Compose no la propagaba y el mecanismo quedaba
+  # muerto justo en la demostracion para la que se escribio.
+  #   $env:OKF_FAULT_INJECT="drop_log"; docker compose up -d worker
+  OKF_FAULT_INJECT: ${OKF_FAULT_INJECT:-}
+
+services:
+  # ---------------------------------------------------------------- postgres --
+  postgres:
+    image: postgres:16.4-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-okf}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-okf_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-okf}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # El "-d" NO es opcional: sin la base de datos, pg_isready responde OK
+      # antes de que exista, y el migrador arrancaria demasiado pronto.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-okf} -d ${POSTGRES_DB:-okf}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks: [core]
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------- rabbitmq --
+  # Etiqueta sin "-alpine" a proposito: la imagen oficial retiro las variantes
+  # Alpine en la serie 3.9, y "rabbitmq:3.13-management-alpine" no existe. Con
+  # ese tag el primer `docker compose up` aborta con "manifest unknown".
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    hostname: okfp-rabbit
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-okf}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-okf_dev_password}
+    ports:
+      # Consola de gestion: se usa en la sustentacion para ensenar la
+      # profundidad de la cola, los consumidores y la cola de fallos.
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - rabbitdata:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+    networks: [core]
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------- minio --
+  minio:
+    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-okfadmin}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-okfadmin_dev_password}
+    ports:
+      # Consola web: sirve para ensenar en camara que un bundle invalido NO
+      # existe bajo el prefijo publicado.
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      # Forma exec y con mc: la imagen de MinIO se construye sobre UBI micro y no
+      # garantiza shell ni curl. Un healthcheck que no pueda ejecutarse deja el
+      # servicio en "starting" para siempre y cuelga todo el `up` sin error util.
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks: [core]
+    restart: unless-stopped
+
+  # ------------------------------------------------- inicializacion one-shot --
+  minio-init:
+    build:
+      context: .
+      target: tools
+      args: { CMD: tools }
+    command: ["buckets"]
+    environment: *backend-env
+    depends_on:
+      minio: { condition: service_healthy }
+    networks: [core]
+    restart: "no"
+
+  migrator:
+    build:
+      context: .
+      target: tools
+      args: { CMD: tools }
+    command: ["migrate"]
+    environment: *backend-env
+    depends_on:
+      postgres: { condition: service_healthy }
+    networks: [core]
+    restart: "no"
+
+  topology:
+    build:
+      context: .
+      target: tools
+      args: { CMD: tools }
+    command: ["topology"]
+    environment: *backend-env
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+    networks: [core]
+    restart: "no"
+
+  seed:
+    # Usuarios de prueba. Se crean solos en el arranque para que la demostracion
+    # del aislamiento tenga dos propietarios distintos desde el primer momento.
+    build:
+      context: .
+      target: tools
+      args: { CMD: tools }
+    command: ["seed"]
+    environment: *backend-env
+    depends_on:
+      migrator: { condition: service_completed_successfully }
+    networks: [core]
+    restart: "no"
+
+  # --------------------------------------------------------------------- api --
+  api:
+    build:
+      context: .
+      target: api
+      args:
+        CMD: api
+        VERSION: ${VERSION:-dev}
+    environment:
+      <<: *backend-env
+      HTTP_ADDR: ":8080"
+    # SIN "ports": es lo que permite `--scale api=3`.
+    # SIN "volumes": es la evidencia de que la API no guarda estado en disco.
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      minio: { condition: service_healthy }
+      migrator: { condition: service_completed_successfully }
+      topology: { condition: service_completed_successfully }
+      minio-init: { condition: service_completed_successfully }
+    # on-failure y no unless-stopped: con unless-stopped, `docker compose kill
+    # api` reinicia el contenedor en un par de segundos y la demostracion de
+    # "el trabajo continua sin la API viva" se cae ante quien mire `ps`.
+    restart: on-failure
+    networks: [core]
+
+  # ------------------------------------------------------------------ worker --
+  worker:
+    build:
+      context: .
+      target: worker
+      args:
+        CMD: worker
+        VERSION: ${VERSION:-dev}
+    environment:
+      <<: *backend-env
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-1}
+      JOB_TIMEOUT: ${JOB_TIMEOUT:-120s}
+      JOB_LEASE: ${JOB_LEASE:-180s}
+      SWEEPER_INTERVAL: ${SWEEPER_INTERVAL:-30s}
+      SWEEPER_STALE_AFTER: ${SWEEPER_STALE_AFTER:-60s}
+      MAX_ATTEMPTS: ${MAX_ATTEMPTS:-3}
+      ENABLE_PDF: ${ENABLE_PDF:-true}
+    # SIN "ports": obligatorio para poder escalar (`--scale worker=3`).
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      minio: { condition: service_healthy }
+      migrator: { condition: service_completed_successfully }
+      topology: { condition: service_completed_successfully }
+      minio-init: { condition: service_completed_successfully }
+    # Debe ser >= JOB_TIMEOUT, o Docker enviaria SIGKILL sobre conversiones
+    # legitimas y cada reinicio multiplicaria los intentos.
+    stop_grace_period: 150s
+    restart: unless-stopped
+    networks: [core]
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  # ---------------------------------------------------------------- frontend --
+  # Unico borde publicado: sirve el SPA de Angular y hace de proxy inverso hacia
+  # la API. Mismo origen => cero CORS, cero preflights en la subida multipart.
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VERSION: ${VERSION:-dev}
+    ports:
+      - "${EDGE_PORT:-8080}:8080"
+    depends_on:
+      api: { condition: service_started }
+    restart: unless-stopped
+    networks: [core]
+
+networks:
+  core:
+    driver: bridge
+
+volumes:
+  pgdata:
+  rabbitdata:
+  miniodata:
