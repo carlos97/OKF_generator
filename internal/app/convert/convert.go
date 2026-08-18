@@ -10,8 +10,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
-	"io"
 	"time"
 
 	"github.com/google/uuid"
@@ -396,6 +394,3 @@ func kindName(k domain.FaultKind) string {
 	}
 	return "transitorio"
 }
-
-var _ = io.Discard
-var _ = fmt.Sprintf
