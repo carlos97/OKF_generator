@@ -43,6 +43,7 @@ func TestNingunaConsultaSinPropietario(t *testing.T) {
 		"MarkFailed":           "transición del worker, acotada por lease_owner",
 		"StaleQueued":          "barrido interno del sistema",
 		"ReclaimExpiredLeases": "barrido interno del sistema",
+		"CancelExpiredLeases":  "barrido interno que finaliza cancelaciones abandonadas, sin exponer datos",
 		"TryAdvisoryLock":      "cerrojo de aviso, no toca datos de usuario",
 		"AdvisoryUnlock":       "cerrojo de aviso, no toca datos de usuario",
 		"AppendEvent":          "inserción de traza para un trabajo ya resuelto",

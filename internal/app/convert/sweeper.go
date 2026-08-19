@@ -56,6 +56,16 @@ func (s *Service) RunSweeper(ctx context.Context, pub Publisher) {
 }
 
 func (s *Service) sweepOnce(ctx context.Context, log logger, pub Publisher) {
+	grace := s.cfg.Work.JobLease
+	canceled, err := s.jobs.CancelExpiredLeases(ctx, grace, 20)
+	if err != nil {
+		log.Warn("no se pudieron cerrar las cancelaciones vencidas", "err", err.Error())
+	}
+	for _, id := range canceled {
+		_ = s.jobs.AppendEvent(ctx, id, 1, domain.EventCanceled, map[string]any{"reason": "lease_vencido"})
+		log.Info("cancelacion cerrada tras lease vencido", "job_id", id.String())
+	}
+
 	unconfirmed, err := s.jobs.StaleQueued(ctx, s.cfg.Work.SweeperStaleAfte, 20)
 	if err != nil {
 		log.Warn("no se pudieron listar los trabajos sin confirmar", "err", err.Error())
@@ -72,7 +82,6 @@ func (s *Service) sweepOnce(ctx context.Context, log logger, pub Publisher) {
 	}
 
 	// El margen extra sobre el lease evita competir con la renovacion normal.
-	grace := s.cfg.Work.JobLease
 	expired, err := s.jobs.ReclaimExpiredLeases(ctx, grace, 20)
 	if err != nil {
 		log.Warn("no se pudieron reclamar los leases vencidos", "err", err.Error())

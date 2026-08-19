@@ -140,8 +140,12 @@ func DeclareTopology(conn *amqp.Connection) error {
 	}
 
 	// Cola de trabajo. Sin x-delivery-limit: el presupuesto de intentos lo
-	// gobierna la base de datos.
-	if _, err := ch.QueueDeclare(QueueJobs, true, false, false, false, nil); err != nil {
+	// gobierna la base de datos. Los nack sin requeue terminan en la DLQ; sin
+	// estos argumentos RabbitMQ los descartaria silenciosamente.
+	if _, err := ch.QueueDeclare(QueueJobs, true, false, false, false, amqp.Table{
+		"x-dead-letter-exchange":    ExchangeDLX,
+		"x-dead-letter-routing-key": RoutingKeyConvert,
+	}); err != nil {
 		return fmt.Errorf("declarar %s (posible PRECONDITION_FAILED por argumentos distintos; use 'docker compose down -v'): %w", QueueJobs, err)
 	}
 	if err := ch.QueueBind(QueueJobs, RoutingKeyConvert, ExchangeJobs, false, nil); err != nil {

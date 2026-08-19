@@ -406,14 +406,18 @@ func (r *JobRepo) RequestCancel(ctx context.Context, ownerID, id uuid.UUID) (dom
 
 // FinishCanceled cierra un trabajo cuya cancelacion cooperativa se atendio.
 func (r *JobRepo) FinishCanceled(ctx context.Context, id uuid.UUID, workerID string) error {
-	_, err := r.db.pool.Exec(ctx,
+	tag, err := r.db.pool.Exec(ctx,
 		`UPDATE jobs SET status = 'canceled', finished_at = now(), updated_at = now(),
 		                 lease_owner = NULL, lease_expires_at = NULL
-		  WHERE id = $1 AND (lease_owner = $2 OR lease_owner IS NULL)`, id, workerID)
-	if err == nil {
-		_ = r.AppendEvent(ctx, id, 1, domain.EventCanceled, nil)
+		  WHERE id = $1 AND lease_owner = $2 AND status = 'canceling'`, id, workerID)
+	if err != nil {
+		return err
 	}
-	return err
+	if tag.RowsAffected() == 0 {
+		return domain.ErrConflict.WithMessage("el trabajo ya no admite cancelacion")
+	}
+	_ = r.AppendEvent(ctx, id, 1, domain.EventCanceled, nil)
+	return nil
 }
 
 // MarkInvalid registra un bundle que NO supero la validacion.
@@ -434,7 +438,7 @@ func (r *JobRepo) MarkInvalid(ctx context.Context, id uuid.UUID, workerID string
 		        okf_score = $5, okf_grade = $6,
 		        finished_at = now(), updated_at = now(),
 		        lease_owner = NULL, lease_expires_at = NULL
-		  WHERE id = $1 AND lease_owner = $2`,
+		  WHERE id = $1 AND lease_owner = $2 AND status = 'running' AND NOT cancel_requested`,
 		id, workerID, string(domain.ResultInvalid), raw, report.OKFScore, report.OKFGrade)
 	if err != nil {
 		return err
@@ -448,17 +452,24 @@ func (r *JobRepo) MarkInvalid(ctx context.Context, id uuid.UUID, workerID string
 }
 
 // ScheduleRetry devuelve el trabajo a la cola tras un fallo transitorio. Es el
-// UNICO sitio donde se incrementa attempt. Devuelve false si ya se agotaron los
-// intentos, en cuyo caso el llamante debe marcarlo como muerto.
-func (r *JobRepo) ScheduleRetry(ctx context.Context, id uuid.UUID, workerID, code, msg string) (bool, int, error) {
+// UNICO sitio donde se incrementa attempt. Una cancelacion que gano la carrera
+// se informa por separado y nunca se transforma de nuevo en queued.
+func (r *JobRepo) ScheduleRetry(ctx context.Context, id uuid.UUID, workerID, code, msg string) (scheduled bool, next int, canceled bool, err error) {
 	var attempt, maxAttempts int
-	err := r.db.pool.QueryRow(ctx,
-		`SELECT attempt, max_attempts FROM jobs WHERE id = $1`, id).Scan(&attempt, &maxAttempts)
+	var status domain.JobStatus
+	err = r.db.pool.QueryRow(ctx,
+		`SELECT status, attempt, max_attempts FROM jobs WHERE id = $1`, id).Scan(&status, &attempt, &maxAttempts)
 	if err != nil {
-		return false, 0, mapErr(err)
+		return false, 0, false, mapErr(err)
+	}
+	if status == domain.JobCanceling || status == domain.JobCanceled {
+		return false, attempt, true, nil
+	}
+	if status != domain.JobRunning {
+		return false, attempt, false, domain.ErrConflict.WithMessage("el trabajo ya no esta en ejecucion")
 	}
 	if attempt >= maxAttempts {
-		return false, attempt, nil
+		return false, attempt, false, nil
 	}
 
 	tag, err := r.db.pool.Exec(ctx,
@@ -467,31 +478,42 @@ func (r *JobRepo) ScheduleRetry(ctx context.Context, id uuid.UUID, workerID, cod
 		        lease_owner = NULL, lease_expires_at = NULL,
 		        enqueued_confirmed_at = NULL,
 		        error_code = $3, error_message = $4, updated_at = now()
-		  WHERE id = $1 AND lease_owner = $2`, id, workerID, code, msg)
+		  WHERE id = $1 AND lease_owner = $2 AND status = 'running' AND NOT cancel_requested`, id, workerID, code, msg)
 	if err != nil {
-		return false, attempt, err
+		return false, attempt, false, err
 	}
 	if tag.RowsAffected() == 0 {
-		return false, attempt, domain.ErrConflict.WithMessage("el lease del trabajo ya no es nuestro")
+		var current domain.JobStatus
+		if err := r.db.pool.QueryRow(ctx, `SELECT status FROM jobs WHERE id = $1`, id).Scan(&current); err != nil {
+			return false, attempt, false, mapErr(err)
+		}
+		if current == domain.JobCanceling || current == domain.JobCanceled {
+			return false, attempt, true, nil
+		}
+		return false, attempt, false, domain.ErrConflict.WithMessage("el lease del trabajo ya no es nuestro")
 	}
 	_ = r.AppendEvent(ctx, id, attempt, domain.EventRetryScheduled,
 		map[string]any{"code": code, "next_attempt": attempt + 1})
-	return true, attempt + 1, nil
+	return true, attempt + 1, false, nil
 }
 
 // MarkFailed cierra el trabajo con un error definitivo (permanente o agotados
 // los reintentos).
 func (r *JobRepo) MarkFailed(ctx context.Context, id uuid.UUID, workerID string, status domain.JobStatus, code, msg string) error {
-	_, err := r.db.pool.Exec(ctx,
+	tag, err := r.db.pool.Exec(ctx,
 		`UPDATE jobs SET status = $3, error_code = $4, error_message = $5,
 		                 finished_at = now(), updated_at = now(),
 		                 lease_owner = NULL, lease_expires_at = NULL
-		  WHERE id = $1 AND (lease_owner = $2 OR lease_owner IS NULL)`,
+		  WHERE id = $1 AND lease_owner = $2 AND status = 'running' AND NOT cancel_requested`,
 		id, workerID, string(status), code, msg)
-	if err == nil {
-		_ = r.AppendEvent(ctx, id, 1, domain.EventFailed, map[string]any{"code": code})
+	if err != nil {
+		return err
 	}
-	return err
+	if tag.RowsAffected() == 0 {
+		return domain.ErrConflict.WithMessage("el trabajo ya no admite fallo terminal")
+	}
+	_ = r.AppendEvent(ctx, id, 1, domain.EventFailed, map[string]any{"code": code})
+	return nil
 }
 
 // --- Barredor ---------------------------------------------------------------
@@ -532,7 +554,7 @@ func (r *JobRepo) ReclaimExpiredLeases(ctx context.Context, grace time.Duration,
 		        enqueued_confirmed_at = NULL, updated_at = now()
 		  WHERE id IN (
 		      SELECT id FROM jobs
-		       WHERE status IN ('running','canceling')
+		       WHERE status = 'running'
 		         AND lease_expires_at < now() - $1::interval
 		       ORDER BY lease_expires_at LIMIT $2
 		  )
@@ -551,6 +573,37 @@ func (r *JobRepo) ReclaimExpiredLeases(ctx context.Context, grace time.Duration,
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// CancelExpiredLeases termina cancelaciones cuyo worker murio antes de atender
+// el punto de control. Nunca se reencolan: respetar la intencion del usuario
+// es mas importante que recuperar trabajo ya cancelado.
+func (r *JobRepo) CancelExpiredLeases(ctx context.Context, grace time.Duration, limit int) ([]uuid.UUID, error) {
+	rows, err := r.db.pool.Query(ctx,
+		`UPDATE jobs
+		    SET status = 'canceled', finished_at = now(), updated_at = now(),
+		        lease_owner = NULL, lease_expires_at = NULL
+		  WHERE id IN (
+		      SELECT id FROM jobs
+		       WHERE status = 'canceling'
+		         AND lease_expires_at < now() - $1::interval
+		       ORDER BY lease_expires_at LIMIT $2
+		  )
+		 RETURNING id`, grace.String(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // TryAdvisoryLock evita que varias replicas ejecuten el barredor a la vez.
