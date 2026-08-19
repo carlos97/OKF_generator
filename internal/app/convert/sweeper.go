@@ -14,6 +14,8 @@ const sweeperLock = "okf-sweeper"
 // Publisher es lo que el barredor necesita para republicar.
 type Publisher interface {
 	Publish(ctx context.Context, msg domain.JobMessage) error
+	PublishRetry(ctx context.Context, msg domain.JobMessage) error
+	PublishDLQ(ctx context.Context, msg domain.JobMessage) error
 }
 
 // RunSweeper recupera trabajos que se quedaron atascados.
@@ -64,6 +66,43 @@ func (s *Service) sweepOnce(ctx context.Context, log logger, pub Publisher) {
 	for _, id := range canceled {
 		_ = s.jobs.AppendEvent(ctx, id, 1, domain.EventCanceled, map[string]any{"reason": "lease_vencido"})
 		log.Info("cancelacion cerrada tras lease vencido", "job_id", id.String())
+	}
+
+	// El outbox se despacha antes de buscar trabajos antiguos. Si RabbitMQ no
+	// confirma, la fila sigue pendiente; si confirma y el worker cae antes de
+	// marcarla, una publicacion posterior solo genera una entrega duplicada que
+	// el CAS de Claim neutraliza.
+	pending, err := s.jobs.PendingOutbox(ctx, 20)
+	if err != nil {
+		log.Warn("no se pudo leer el outbox", "err", err.Error())
+	}
+	for _, item := range pending {
+		var publishErr error
+		switch item.Destination {
+		case "jobs":
+			publishErr = pub.Publish(ctx, item.Message)
+		case "retry":
+			publishErr = pub.PublishRetry(ctx, item.Message)
+		case "dlq":
+			publishErr = pub.PublishDLQ(ctx, item.Message)
+		default:
+			log.Error("destino invalido en outbox", "outbox_id", item.ID.String(), "destination", item.Destination)
+			continue
+		}
+		if publishErr != nil {
+			log.Warn("no se pudo despachar el outbox", "outbox_id", item.ID.String(),
+				"job_id", item.Message.JobID.String(), "err", publishErr.Error())
+			continue
+		}
+		if err := s.jobs.MarkOutboxPublished(ctx, item.ID); err != nil {
+			log.Warn("RabbitMQ confirmo pero no se marco el outbox", "outbox_id", item.ID.String(), "err", err.Error())
+			continue
+		}
+		if item.Destination != "dlq" {
+			_ = s.jobs.MarkEnqueued(ctx, item.Message.JobID)
+		}
+		log.Info("outbox despachado", "outbox_id", item.ID.String(),
+			"job_id", item.Message.JobID.String(), "destination", item.Destination)
 	}
 
 	unconfirmed, err := s.jobs.StaleQueued(ctx, s.cfg.Work.SweeperStaleAfte, 20)

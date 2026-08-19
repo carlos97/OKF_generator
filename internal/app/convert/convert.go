@@ -362,13 +362,10 @@ func (s *Service) fail(ctx context.Context, log logger, job *domain.Job, err err
 		return queue.Ack
 	}
 
-	if err := s.retry.PublishRetry(ctx, msg); err != nil {
-		log.Error("no se pudo publicar en la cola de espera", "err", err.Error())
-		// El estado queued sin confirmacion es durable y el barredor lo
-		// republicara. Confirmar la entrega evita duplicarla en la DLQ.
-		return queue.Ack
-	}
-	log.Info("reintento programado", "siguiente_intento", next)
+	// ScheduleRetry persistio estado, disponibilidad y outbox en UNA sola
+	// transaccion. El barredor publicara tras confirm; confirmar esta entrega
+	// aqui no puede perder ni adelantar el reintento.
+	log.Info("reintento registrado en outbox", "siguiente_intento", next)
 	return queue.Ack
 }
 

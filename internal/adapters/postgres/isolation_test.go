@@ -40,6 +40,8 @@ func TestNingunaConsultaSinPropietario(t *testing.T) {
 		"FinishCanceled":       "transición del worker",
 		"MarkInvalid":          "transición del worker, acotada por lease_owner",
 		"ScheduleRetry":        "transición del worker, acotada por lease_owner",
+		"PendingOutbox":        "barredor interno; reconstruye mensajes de trabajos sin exponerlos",
+		"MarkOutboxPublished":  "barredor interno tras confirmación de RabbitMQ",
 		"MarkFailed":           "transición del worker, acotada por lease_owner",
 		"StaleQueued":          "barrido interno del sistema",
 		"ReclaimExpiredLeases": "barrido interno del sistema",

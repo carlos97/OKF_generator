@@ -17,6 +17,14 @@ type JobRepo struct{ db *DB }
 
 func NewJobRepo(db *DB) *JobRepo { return &JobRepo{db: db} }
 
+// OutboxMessage es una intencion durable de publicar un trabajo. El mensaje
+// se recompone desde jobs: asi nunca se duplica estado de negocio en RabbitMQ.
+type OutboxMessage struct {
+	ID          uuid.UUID
+	Destination string
+	Message     domain.JobMessage
+}
+
 // Las columnas del trabajo se declaran DOS veces, con y sin alias, y ambas
 // listas deben mantener el MISMO ORDEN porque scanJob es comun a las dos.
 //
@@ -319,7 +327,8 @@ func (r *JobRepo) Claim(ctx context.Context, id uuid.UUID, workerID string, leas
 		        started_at = COALESCE(started_at, now()),
 		        updated_at = now()
 		  WHERE id = $1
-		    AND (status = 'queued' OR (status = 'running' AND lease_expires_at < now()))
+		    AND ((status = 'queued' AND available_at <= now())
+		      OR (status = 'running' AND lease_expires_at < now()))
 		 RETURNING `+jobColsBare, id, workerID, lease.String())
 
 	j, err := scanJob(row)
@@ -457,8 +466,14 @@ func (r *JobRepo) MarkInvalid(ctx context.Context, id uuid.UUID, workerID string
 func (r *JobRepo) ScheduleRetry(ctx context.Context, id uuid.UUID, workerID, code, msg string) (scheduled bool, next int, canceled bool, err error) {
 	var attempt, maxAttempts int
 	var status domain.JobStatus
-	err = r.db.pool.QueryRow(ctx,
-		`SELECT status, attempt, max_attempts FROM jobs WHERE id = $1`, id).Scan(&status, &attempt, &maxAttempts)
+	tx, err := r.db.pool.Begin(ctx)
+	if err != nil {
+		return false, 0, false, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op tras Commit
+
+	err = tx.QueryRow(ctx,
+		`SELECT status, attempt, max_attempts FROM jobs WHERE id = $1 FOR UPDATE`, id).Scan(&status, &attempt, &maxAttempts)
 	if err != nil {
 		return false, 0, false, mapErr(err)
 	}
@@ -472,10 +487,11 @@ func (r *JobRepo) ScheduleRetry(ctx context.Context, id uuid.UUID, workerID, cod
 		return false, attempt, false, nil
 	}
 
-	tag, err := r.db.pool.Exec(ctx,
+	tag, err := tx.Exec(ctx,
 		`UPDATE jobs
 		    SET status = 'queued', attempt = attempt + 1,
 		        lease_owner = NULL, lease_expires_at = NULL,
+		        available_at = now() + interval '30 seconds',
 		        enqueued_confirmed_at = NULL,
 		        error_code = $3, error_message = $4, updated_at = now()
 		  WHERE id = $1 AND lease_owner = $2 AND status = 'running' AND NOT cancel_requested`, id, workerID, code, msg)
@@ -484,7 +500,7 @@ func (r *JobRepo) ScheduleRetry(ctx context.Context, id uuid.UUID, workerID, cod
 	}
 	if tag.RowsAffected() == 0 {
 		var current domain.JobStatus
-		if err := r.db.pool.QueryRow(ctx, `SELECT status FROM jobs WHERE id = $1`, id).Scan(&current); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT status FROM jobs WHERE id = $1`, id).Scan(&current); err != nil {
 			return false, attempt, false, mapErr(err)
 		}
 		if current == domain.JobCanceling || current == domain.JobCanceled {
@@ -492,9 +508,54 @@ func (r *JobRepo) ScheduleRetry(ctx context.Context, id uuid.UUID, workerID, cod
 		}
 		return false, attempt, false, domain.ErrConflict.WithMessage("el lease del trabajo ya no es nuestro")
 	}
-	_ = r.AppendEvent(ctx, id, attempt, domain.EventRetryScheduled,
-		map[string]any{"code": code, "next_attempt": attempt + 1})
-	return true, attempt + 1, false, nil
+	next = attempt + 1
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO job_outbox (id, job_id, destination, message_attempt)
+		 VALUES ($1, $2, 'retry', $3)`, uuid.New(), id, next); err != nil {
+		return false, attempt, false, err
+	}
+	if err := appendEventTx(ctx, tx, id, attempt, domain.EventRetryScheduled,
+		map[string]any{"code": code, "next_attempt": attempt + 1}); err != nil {
+		return false, attempt, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, attempt, false, err
+	}
+	return true, next, false, nil
+}
+
+// PendingOutbox devuelve publicaciones aun no confirmadas por RabbitMQ. El
+// barredor posee un advisory lock, por lo que una unica replica las despacha.
+func (r *JobRepo) PendingOutbox(ctx context.Context, limit int) ([]OutboxMessage, error) {
+	rows, err := r.db.pool.Query(ctx,
+		`SELECT o.id, o.destination, j.id, j.owner_id, j.document_id, o.message_attempt
+		   FROM job_outbox o
+		   JOIN jobs j ON j.id = o.job_id
+		  WHERE o.published_at IS NULL
+		  ORDER BY o.created_at
+		  LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []OutboxMessage
+	for rows.Next() {
+		var item OutboxMessage
+		if err := rows.Scan(&item.ID, &item.Destination, &item.Message.JobID,
+			&item.Message.OwnerID, &item.Message.DocumentID, &item.Message.Attempt); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+// MarkOutboxPublished se llama unicamente despues del publisher confirm.
+func (r *JobRepo) MarkOutboxPublished(ctx context.Context, id uuid.UUID) error {
+	_, err := r.db.pool.Exec(ctx,
+		`UPDATE job_outbox SET published_at = now() WHERE id = $1 AND published_at IS NULL`, id)
+	return err
 }
 
 // MarkFailed cierra el trabajo con un error definitivo (permanente o agotados
@@ -526,6 +587,11 @@ func (r *JobRepo) StaleQueued(ctx context.Context, olderThan time.Duration, limi
 	rows, err := r.db.pool.Query(ctx,
 		`SELECT id, owner_id, document_id, attempt FROM jobs
 		  WHERE status = 'queued' AND enqueued_confirmed_at IS NULL
+		    AND available_at <= now()
+		    AND NOT EXISTS (
+		        SELECT 1 FROM job_outbox o
+		         WHERE o.job_id = jobs.id AND o.published_at IS NULL
+		    )
 		    AND created_at < now() - $1::interval
 		  ORDER BY created_at LIMIT $2`, olderThan.String(), limit)
 	if err != nil {
