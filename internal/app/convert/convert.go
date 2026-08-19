@@ -25,18 +25,11 @@ import (
 	"github.com/uniandes-isis4426/okfp/internal/platform/logging"
 )
 
-// Retrier reprograma y archiva trabajos.
-type Retrier interface {
-	PublishRetry(ctx context.Context, msg domain.JobMessage) error
-	PublishDLQ(ctx context.Context, msg domain.JobMessage) error
-}
-
 type Service struct {
 	jobs    *postgres.JobRepo
 	docs    *postgres.DocumentRepo
 	bundles *postgres.BundleRepo
 	store   *objectstore.Store
-	retry   Retrier
 	cfg     *config.Config
 
 	workerID string
@@ -44,10 +37,10 @@ type Service struct {
 
 func NewService(
 	jobs *postgres.JobRepo, docs *postgres.DocumentRepo, bundles *postgres.BundleRepo,
-	store *objectstore.Store, retry Retrier, cfg *config.Config, workerID string,
+	store *objectstore.Store, cfg *config.Config, workerID string,
 ) *Service {
 	return &Service{jobs: jobs, docs: docs, bundles: bundles, store: store,
-		retry: retry, cfg: cfg, workerID: workerID}
+		cfg: cfg, workerID: workerID}
 }
 
 // Handle procesa una entrega de la cola y decide si se confirma o se descarta.
@@ -333,7 +326,7 @@ func (s *Service) fail(ctx context.Context, log logger, job *domain.Job, err err
 	// NUNCA se usa nack con requeue: reencolaria al instante y produciria un
 	// bucle de fuego rapido que saturaria al worker y a la base de datos
 	// mientras la dependencia caida se recupera.
-	scheduled, next, canceled, serr := s.jobs.ScheduleRetry(ctx, job.ID, s.workerID, fault.Code, fault.Message)
+	scheduled, next, canceled, serr := s.jobs.ScheduleRetry(ctx, job.ID, s.workerID, fault.Code, fault.Message, s.cfg.Work.RetryDelay)
 	if serr != nil {
 		log.Error("no se pudo reprogramar el reintento", "err", serr.Error())
 		return queue.NackDrop
@@ -346,18 +339,19 @@ func (s *Service) fail(ctx context.Context, log logger, job *domain.Job, err err
 		return queue.Ack
 	}
 
-	msg := domain.JobMessage{
-		JobID: job.ID, OwnerID: job.OwnerID, DocumentID: job.DocumentID, Attempt: next,
-	}
-
 	if !scheduled {
-		// Agotados los intentos.
-		if err := s.jobs.MarkFailed(ctx, job.ID, s.workerID, domain.JobDead, fault.Code, fault.Message); err != nil {
+		// Agotados los intentos: el estado terminal y la intencion de envio a
+		// DLQ quedan juntos en el outbox. Un crash no puede dejar un dead sin
+		// su evidencia en la cola de fallos.
+		canceled, err := s.jobs.MarkDeadWithOutbox(ctx, job.ID, s.workerID, fault.Code, fault.Message)
+		if err != nil {
 			return s.finishCanceledOrNack(ctx, job)
 		}
-		if err := s.retry.PublishDLQ(ctx, msg); err != nil {
-			log.Error("no se pudo archivar en la cola de fallos", "err", err.Error())
-			return queue.NackDrop
+		if canceled {
+			if err := s.jobs.FinishCanceled(ctx, job.ID, s.workerID); err != nil {
+				log.Error("no se pudo cerrar la cancelacion", "err", err.Error())
+				return queue.NackDrop
+			}
 		}
 		return queue.Ack
 	}

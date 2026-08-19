@@ -260,10 +260,17 @@ type Consumer struct {
 	conn     *amqp.Connection
 	ch       *amqp.Channel
 	prefetch int
+	workers  int
 	tag      string
 }
 
-func NewConsumer(url string, prefetch int, tag string) (*Consumer, error) {
+func NewConsumer(url string, prefetch, workers int, tag string) (*Consumer, error) {
+	if prefetch < 1 {
+		return nil, fmt.Errorf("prefetch debe ser al menos 1")
+	}
+	if workers < 1 {
+		return nil, fmt.Errorf("concurrencia debe ser al menos 1")
+	}
 	conn, err := Dial(url)
 	if err != nil {
 		return nil, err
@@ -273,14 +280,18 @@ func NewConsumer(url string, prefetch int, tag string) (*Consumer, error) {
 		conn.Close()
 		return nil, err
 	}
-	// prefetch=1 es lo que hace que --scale worker=N reparta trabajo sin
-	// ninguna coordinacion adicional: cada worker toma un mensaje y no acumula.
+	// Se reserva como maximo una entrega por ranura. Asi WORKER_CONCURRENCY
+	// limita trabajo real en vuelo, sin dejar ranuras ociosas cuando PREFETCH
+	// quedo con su default de 1.
+	if prefetch < workers {
+		prefetch = workers
+	}
 	if err := ch.Qos(prefetch, 0, false); err != nil {
 		ch.Close()
 		conn.Close()
 		return nil, err
 	}
-	return &Consumer{conn: conn, ch: ch, prefetch: prefetch, tag: tag}, nil
+	return &Consumer{conn: conn, ch: ch, prefetch: prefetch, workers: workers, tag: tag}, nil
 }
 
 func (c *Consumer) Close() error {
@@ -289,6 +300,10 @@ func (c *Consumer) Close() error {
 	}
 	return c.conn.Close()
 }
+
+// Prefetch devuelve el credito efectivo, que puede crecer para no estrangular
+// una concurrencia configurada mayor que el prefetch solicitado.
+func (c *Consumer) Prefetch() int { return c.prefetch }
 
 // Consume bloquea hasta que ctx se cancela.
 //
@@ -305,6 +320,9 @@ func (c *Consumer) Consume(ctx context.Context, workCtx context.Context, h Handl
 
 	closed := c.conn.NotifyClose(make(chan *amqp.Error, 1))
 	var wg sync.WaitGroup
+	// El semaforo es la autoridad de concurrencia local. RabbitMQ puede haber
+	// entregado hasta prefetch mensajes, pero nunca mas de workers se ejecutan.
+	slots := make(chan struct{}, c.workers)
 
 	for {
 		select {
@@ -329,6 +347,15 @@ func (c *Consumer) Consume(ctx context.Context, workCtx context.Context, h Handl
 			wg.Add(1)
 			go func(d amqp.Delivery) {
 				defer wg.Done()
+				select {
+				case slots <- struct{}{}:
+				case <-ctx.Done():
+					// El consumo ya se esta deteniendo. Esta entrega nunca llego
+					// al handler, asi que vuelve a la cola para otra replica.
+					_ = d.Nack(false, true)
+					return
+				}
+				defer func() { <-slots }()
 				handle(workCtx, d, h)
 			}(d)
 		}

@@ -180,12 +180,9 @@ func (r *JobRepo) List(ctx context.Context, ownerID uuid.UUID, limit, offset int
 
 // CreateWithDocument inserta documento y trabajo en UNA transaccion.
 //
-// El orden importa y no es negociable: el COMMIT de esta transaccion ocurre
-// SIEMPRE antes de publicar el mensaje en la cola. Publicar primero abre una
-// carrera real (el worker consume en milisegundos cuando esta ocioso) en la que
-// el worker recibe un job_id que aun no existe en la base de datos; si ademas
-// lo tratase como duplicado y lo descartase con ack, el trabajo se perderia en
-// silencio y de forma intermitente.
+// La intencion de publicar se guarda dentro de la misma transaccion. El
+// barredor la despacha despues del commit: asi un fallo entre PostgreSQL y
+// RabbitMQ nunca deja un trabajo creado sin una ruta durable hacia la cola.
 func (r *JobRepo) CreateWithDocument(ctx context.Context, d *domain.Document, j *domain.Job) error {
 	tx, err := r.db.pool.Begin(ctx)
 	if err != nil {
@@ -213,6 +210,11 @@ func (r *JobRepo) CreateWithDocument(ctx context.Context, d *domain.Document, j 
 		}
 		return err
 	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO job_outbox (id, job_id, destination, message_attempt)
+		 VALUES ($1, $2, 'jobs', 1)`, uuid.New(), j.ID); err != nil {
+		return err
+	}
 
 	if err := appendEventTx(ctx, tx, j.ID, 1, domain.EventQueued, nil); err != nil {
 		return err
@@ -231,7 +233,15 @@ func (r *JobRepo) CreateWithDocument(ctx context.Context, d *domain.Document, j 
 // El doble clic en "Reintentar" no crea dos hijos: lo impide el indice unico
 // parcial sobre parent_job_id, y en ese caso se devuelve el hijo ya existente.
 func (r *JobRepo) CreateRetry(ctx context.Context, ownerID, parentID uuid.UUID) (*domain.Job, error) {
-	parent, err := r.Get(ctx, ownerID, parentID)
+	tx, err := r.db.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op tras Commit
+
+	parent, err := scanJob(tx.QueryRow(ctx,
+		`SELECT `+jobCols+` FROM jobs j WHERE j.id = $1 AND j.owner_id = $2 FOR UPDATE`,
+		parentID, ownerID))
 	if err != nil {
 		return nil, err
 	}
@@ -255,7 +265,7 @@ func (r *JobRepo) CreateRetry(ctx context.Context, ownerID, parentID uuid.UUID) 
 		RootJobID:   root,
 	}
 
-	_, err = r.db.pool.Exec(ctx,
+	_, err = tx.Exec(ctx,
 		`INSERT INTO jobs (id, owner_id, document_id, status, attempt, max_attempts, parent_job_id, root_job_id)
 		 VALUES ($1,$2,$3,'queued',1,$4,$5,$6)`,
 		child.ID, child.OwnerID, child.DocumentID, child.MaxAttempts, child.ParentJobID, child.RootJobID)
@@ -265,6 +275,9 @@ func (r *JobRepo) CreateRetry(ctx context.Context, ownerID, parentID uuid.UUID) 
 		switch pgErr.ConstraintName {
 		case "jobs_single_retry_per_parent_uk":
 			// Doble clic: devolver el hijo que ya existe (200, no un error).
+			if err := tx.Rollback(ctx); err != nil {
+				return nil, err
+			}
 			return r.byParent(ctx, ownerID, parent.ID)
 		case "jobs_active_per_document_uk":
 			return nil, domain.ErrJobActive
@@ -274,8 +287,18 @@ func (r *JobRepo) CreateRetry(ctx context.Context, ownerID, parentID uuid.UUID) 
 		return nil, err
 	}
 
-	_ = r.AppendEvent(ctx, child.ID, 1, domain.EventQueued,
-		map[string]any{"retry_of": parent.ID.String()})
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO job_outbox (id, job_id, destination, message_attempt)
+		 VALUES ($1, $2, 'jobs', 1)`, uuid.New(), child.ID); err != nil {
+		return nil, err
+	}
+	if err := appendEventTx(ctx, tx, child.ID, 1, domain.EventQueued,
+		map[string]any{"retry_of": parent.ID.String()}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
 	return child, nil
 }
 
@@ -463,7 +486,7 @@ func (r *JobRepo) MarkInvalid(ctx context.Context, id uuid.UUID, workerID string
 // ScheduleRetry devuelve el trabajo a la cola tras un fallo transitorio. Es el
 // UNICO sitio donde se incrementa attempt. Una cancelacion que gano la carrera
 // se informa por separado y nunca se transforma de nuevo en queued.
-func (r *JobRepo) ScheduleRetry(ctx context.Context, id uuid.UUID, workerID, code, msg string) (scheduled bool, next int, canceled bool, err error) {
+func (r *JobRepo) ScheduleRetry(ctx context.Context, id uuid.UUID, workerID, code, msg string, delay time.Duration) (scheduled bool, next int, canceled bool, err error) {
 	var attempt, maxAttempts int
 	var status domain.JobStatus
 	tx, err := r.db.pool.Begin(ctx)
@@ -491,10 +514,10 @@ func (r *JobRepo) ScheduleRetry(ctx context.Context, id uuid.UUID, workerID, cod
 		`UPDATE jobs
 		    SET status = 'queued', attempt = attempt + 1,
 		        lease_owner = NULL, lease_expires_at = NULL,
-		        available_at = now() + interval '30 seconds',
+		        available_at = now() + $5::interval,
 		        enqueued_confirmed_at = NULL,
 		        error_code = $3, error_message = $4, updated_at = now()
-		  WHERE id = $1 AND lease_owner = $2 AND status = 'running' AND NOT cancel_requested`, id, workerID, code, msg)
+		  WHERE id = $1 AND lease_owner = $2 AND status = 'running' AND NOT cancel_requested`, id, workerID, code, msg, delay.String())
 	if err != nil {
 		return false, attempt, false, err
 	}
@@ -511,7 +534,7 @@ func (r *JobRepo) ScheduleRetry(ctx context.Context, id uuid.UUID, workerID, cod
 	next = attempt + 1
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO job_outbox (id, job_id, destination, message_attempt)
-		 VALUES ($1, $2, 'retry', $3)`, uuid.New(), id, next); err != nil {
+		 VALUES ($1, $2, 'jobs', $3)`, uuid.New(), id, next); err != nil {
 		return false, attempt, false, err
 	}
 	if err := appendEventTx(ctx, tx, id, attempt, domain.EventRetryScheduled,
@@ -532,6 +555,7 @@ func (r *JobRepo) PendingOutbox(ctx context.Context, limit int) ([]OutboxMessage
 		   FROM job_outbox o
 		   JOIN jobs j ON j.id = o.job_id
 		  WHERE o.published_at IS NULL
+		    AND (o.destination <> 'jobs' OR j.available_at <= now())
 		  ORDER BY o.created_at
 		  LIMIT $1`, limit)
 	if err != nil {
@@ -556,6 +580,62 @@ func (r *JobRepo) MarkOutboxPublished(ctx context.Context, id uuid.UUID) error {
 	_, err := r.db.pool.Exec(ctx,
 		`UPDATE job_outbox SET published_at = now() WHERE id = $1 AND published_at IS NULL`, id)
 	return err
+}
+
+// MarkDeadWithOutbox cierra un trabajo que agoto sus reintentos y persiste,
+// en la MISMA transaccion, la intencion de archivarlo en la DLQ.
+//
+// Marcarlo dead antes de publicar directamente dejaria una ventana fatal: si
+// el worker muere entre ambas operaciones, el usuario ve el error terminal
+// pero el mensaje nunca llega a la cola de inspeccion. La fila del outbox es
+// durable y el barredor la despacha con publisher confirm hasta que quede
+// marcada como publicada.
+//
+// canceled informa que la cancelacion cooperativa gano la carrera. En ese
+// caso no se crea ningun mensaje DLQ ni se convierte un trabajo cancelado en
+// fallo terminal.
+func (r *JobRepo) MarkDeadWithOutbox(ctx context.Context, id uuid.UUID, workerID, code, msg string) (canceled bool, err error) {
+	tx, err := r.db.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op tras Commit
+
+	var attempt int
+	tag, err := tx.Exec(ctx,
+		`UPDATE jobs SET status = 'dead', error_code = $3, error_message = $4,
+		                 finished_at = now(), updated_at = now(),
+		                 lease_owner = NULL, lease_expires_at = NULL
+		  WHERE id = $1 AND lease_owner = $2 AND status = 'running' AND NOT cancel_requested`,
+		id, workerID, code, msg)
+	if err != nil {
+		return false, err
+	}
+	if tag.RowsAffected() == 0 {
+		var status domain.JobStatus
+		if err := tx.QueryRow(ctx, `SELECT status FROM jobs WHERE id = $1`, id).Scan(&status); err != nil {
+			return false, mapErr(err)
+		}
+		if status == domain.JobCanceling || status == domain.JobCanceled {
+			return true, nil
+		}
+		return false, domain.ErrConflict.WithMessage("el trabajo ya no admite fallo terminal")
+	}
+	if err := tx.QueryRow(ctx, `SELECT attempt FROM jobs WHERE id = $1`, id).Scan(&attempt); err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO job_outbox (id, job_id, destination, message_attempt)
+		 VALUES ($1, $2, 'dlq', $3)`, uuid.New(), id, attempt); err != nil {
+		return false, err
+	}
+	if err := appendEventTx(ctx, tx, id, attempt, domain.EventFailed, map[string]any{"code": code}); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 // MarkFailed cierra el trabajo con un error definitivo (permanente o agotados
