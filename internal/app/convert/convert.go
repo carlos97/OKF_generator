@@ -250,7 +250,7 @@ func (s *Service) publish(ctx context.Context, log logger, job *domain.Job, out 
 		JobID:      job.ID,
 		OwnerID:    job.OwnerID,
 		DocumentID: job.DocumentID,
-		Prefix:     objectstore.PublishedPrefix(job.OwnerID.String(), job.ID.String()),
+		Prefix:     objectstore.PublishedPrefix(job.OwnerID.String(), job.ID.String(), uuid.NewString()),
 		Status:     domain.BundlePromoting,
 		UnitCount:  out.Units,
 		TotalBytes: out.FS.TotalBytes(),
@@ -273,7 +273,7 @@ func (s *Service) publish(ctx context.Context, log logger, job *domain.Job, out 
 		src := tmpPrefix + f.Path
 		dst := bundle.Prefix + f.Path
 		if err := s.store.Copy(ctx, s.store.BucketBundles(), src, dst); err != nil {
-			_ = s.bundles.DeleteClaim(ctx, bundle.ID)
+			_ = s.bundles.DeleteClaim(ctx, bundle.ID, s.workerID)
 			return err
 		}
 		files = append(files, domain.BundleFile{
@@ -286,7 +286,7 @@ func (s *Service) publish(ctx context.Context, log logger, job *domain.Job, out 
 		// Si la cancelacion gano la carrera, o el lease se perdio, no se
 		// publica: la transaccion lo detecto por filas afectadas.
 		log.Warn("no se pudo cerrar la publicacion", "err", err.Error())
-		_ = s.bundles.DeleteClaim(ctx, bundle.ID)
+		_ = s.bundles.DeleteClaim(ctx, bundle.ID, s.workerID)
 		return err
 	}
 

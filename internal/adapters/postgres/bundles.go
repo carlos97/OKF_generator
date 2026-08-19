@@ -45,13 +45,10 @@ func scanBundle(row pgx.Row) (*domain.Bundle, error) {
 // razon por la que C6 se cumple TAMBIEN en el almacenamiento y no solo en la
 // base de datos.
 //
-// Se ejecuta ANTES de copiar un solo objeto al prefijo servible. Si dos
-// intentos del mismo trabajo llegan hasta aqui (reentrega de la cola, robo de
-// lease), solo uno inserta la fila; el perdedor lo descubre por el ON CONFLICT,
-// limpia su area temporal y hace ack sin tocar el prefijo publicado. Si el
-// reclamo se hiciese despues de copiar, el indice unico llegaria tarde: impide
-// la segunda FILA, no la segunda ESCRITURA, y el usuario podria estar
-// descargando un ZIP con la mezcla de dos intentos.
+// Se ejecuta ANTES de copiar un solo objeto al prefijo servible. Si el worker
+// anterior murio despues de crear una fila `promoting`, el nuevo dueño del
+// lease recupera esa fila y la apunta a un prefijo nuevo. Asi los objetos que
+// aun pudiera escribir el worker anterior quedan inaccesibles.
 //
 // Devuelve claimed=false cuando otro intento ya gano.
 func (r *BundleRepo) ClaimForPublish(
@@ -63,6 +60,19 @@ func (r *BundleRepo) ClaimForPublish(
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
+	// El lease se valida antes de insertar o recuperar una promocion. Una
+	// transaccion que ya perdio el trabajo no puede modificar la fila bundles.
+	tag, err := tx.Exec(ctx,
+		`UPDATE jobs SET updated_at = now()
+		  WHERE id = $1 AND lease_owner = $2 AND status = 'running'`,
+		b.JobID, workerID)
+	if err != nil {
+		return false, err
+	}
+	if tag.RowsAffected() == 0 {
+		return false, nil
+	}
+
 	var id uuid.UUID
 	err = tx.QueryRow(ctx,
 		`INSERT INTO bundles (id, job_id, owner_id, document_id, prefix, status, unit_count, total_bytes)
@@ -72,10 +82,7 @@ func (r *BundleRepo) ClaimForPublish(
 		b.ID, b.JobID, b.OwnerID, b.DocumentID, b.Prefix, b.UnitCount, b.TotalBytes,
 	).Scan(&id)
 
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil // otro intento gano la carrera
-	}
-	if err != nil {
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			return false, nil
@@ -83,17 +90,28 @@ func (r *BundleRepo) ClaimForPublish(
 		return false, err
 	}
 
-	// Comprobar que el lease sigue siendo nuestro DENTRO de la misma
-	// transaccion. Si lo perdimos, otro worker esta trabajando el mismo job y
-	// no podemos promover: se deshace el reclamo con el rollback.
-	tag, err := tx.Exec(ctx,
-		`UPDATE jobs SET updated_at = now() WHERE id = $1 AND lease_owner = $2 AND status IN ('running','canceling')`,
-		b.JobID, workerID)
-	if err != nil {
-		return false, err
-	}
-	if tag.RowsAffected() == 0 {
-		return false, nil
+	if errors.Is(err, pgx.ErrNoRows) {
+		var status string
+		if err := tx.QueryRow(ctx,
+			`SELECT status FROM bundles WHERE job_id = $1 FOR UPDATE`, b.JobID).Scan(&status); err != nil {
+			return false, err
+		}
+		switch domain.BundleStatus(status) {
+		case domain.BundlePublished:
+			return false, nil
+		case domain.BundlePromoting:
+			// La fila anterior solo representa una promocion inconclusa. El
+			// lease actual y el bloqueo de fila serializan su reemplazo.
+			if _, err := tx.Exec(ctx,
+				`UPDATE bundles
+				    SET prefix = $2, unit_count = $3, total_bytes = $4, published_at = NULL
+				  WHERE job_id = $1 AND status = 'promoting'`,
+				b.JobID, b.Prefix, b.UnitCount, b.TotalBytes); err != nil {
+				return false, err
+			}
+		default:
+			return false, errors.New("estado de bundle desconocido durante la promocion")
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -171,9 +189,12 @@ func (r *BundleRepo) Publish(
 
 // DeleteClaim deshace un reclamo cuando la promocion fallo a mitad, para que un
 // reintento posterior pueda volver a intentarlo.
-func (r *BundleRepo) DeleteClaim(ctx context.Context, bundleID uuid.UUID) error {
+func (r *BundleRepo) DeleteClaim(ctx context.Context, bundleID uuid.UUID, workerID string) error {
 	_, err := r.db.pool.Exec(ctx,
-		`DELETE FROM bundles WHERE id = $1 AND status = 'promoting'`, bundleID)
+		`DELETE FROM bundles b
+		  USING jobs j
+		 WHERE b.id = $1 AND b.job_id = j.id AND b.status = 'promoting'
+		   AND j.lease_owner = $2 AND j.status = 'running'`, bundleID, workerID)
 	return err
 }
 
