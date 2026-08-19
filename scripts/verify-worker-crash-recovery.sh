@@ -52,7 +52,7 @@ docker compose up -d frontend >/dev/null
 
 # El modo lento abre una ventana estable para matar el contenedor tras el claim.
 # Los tiempos respetan la invariante JOB_LEASE > JOB_TIMEOUT del worker.
-DEMO_SLOW_MODE_MS=15000 JOB_TIMEOUT=20s JOB_LEASE=25s SWEEPER_INTERVAL=2s \
+env DEMO_SLOW_MODE_MS=15000 JOB_TIMEOUT=20s JOB_LEASE=25s SWEEPER_INTERVAL=2s \
   docker compose up -d --no-deps --force-recreate worker >/dev/null
 
 wait_api
@@ -73,7 +73,7 @@ done
 [[ "${status:-}" == 'running' ]] || fail "el worker no reclamo el trabajo antes del timeout (estado: ${status:-desconocido})"
 
 docker compose kill -s SIGKILL worker >/dev/null
-DEMO_SLOW_MODE_MS=15000 JOB_TIMEOUT=20s JOB_LEASE=25s SWEEPER_INTERVAL=2s \
+env DEMO_SLOW_MODE_MS=15000 JOB_TIMEOUT=20s JOB_LEASE=25s SWEEPER_INTERVAL=2s \
   docker compose up -d --no-deps --force-recreate worker >/dev/null
 echo '  worker detenido con SIGKILL despues del claim; esperando recuperar el lease...'
 
