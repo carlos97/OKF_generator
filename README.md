@@ -51,6 +51,27 @@ la máquina: todo se compila en imágenes multietapa.
 > *Troubleshoot → Restart*. Lanzar `docker compose up` antes de eso produce una
 > construcción que parece progresar y nunca avanza.
 
+> **Volúmenes de una versión anterior:** si el volumen `rabbitdata` ya existía,
+> puede contener colas declaradas por una versión previa del código con otros
+> argumentos. RabbitMQ responde entonces `PRECONDITION_FAILED (406)` a la
+> redeclaración y el servicio `topology` sale con código 1, lo que deja a `api` y
+> `worker` sin arrancar («dependency failed to start»). El servicio lo **repara
+> solo**: borra la cola incompatible y la vuelve a declarar, y lo anuncia en su
+> propia salida.
+>
+> La reparación exige que la cola esté **vacía**, y no por prudencia genérica: el
+> barredor solo republica trabajos cuyo mensaje nunca se confirmó, así que borrar
+> una cola con mensajes ya confirmados perdería trabajo que nada recuperaría. Si
+> queda algo dentro, `topology` se detiene con la instrucción concreta: esperar a
+> que los workers la vacíen y repetir `docker compose up topology`, o descartar su
+> contenido a mano con
+>
+> ```powershell
+> docker compose exec rabbitmq rabbitmqctl delete_queue okf.jobs.q
+> ```
+>
+> No hace falta `docker compose down -v`, que además borraría Postgres y MinIO.
+
 ---
 
 ## 2. Arquitectura
@@ -83,6 +104,47 @@ api (Go · sin estado · sin volúmenes · N réplicas)
 | Base de datos | **PostgreSQL 16** | Los índices únicos parciales y las transiciones compare-and-swap son el mecanismo que garantiza un único bundle por trabajo. `JSONB` para el informe de validación. | MySQL, MongoDB |
 | Almacenamiento | **MinIO** (S3-compatible), cliente `minio-go/v7` | Permite que la API no monte ningún volumen. Se descarta `aws-sdk-go-v2` por dos motivos concretos: su firmante SigV4 no admite cuerpos no *seekable* sobre HTTP sin TLS (justo el caso de una subida en streaming), y sus checksums por defecto corrompen objetos silenciosamente contra MinIO. | `aws-sdk-go-v2`, volumen compartido |
 | Frontend | **Angular 21** (línea LTS) | El CLI 22 exige Node ^24.15.0 y el entorno tiene 24.3.0. Standalone + signals + `@if/@for`. | Angular 22 (incompatible) |
+
+### Identidad visual del frontend
+
+La interfaz implementa el documento **SONORA · identidad visual web (v01 · 2026)**.
+Lo que se adopta es el **sistema visual**, no la marca: el producto sigue
+llamándose OKF, porque es el nombre con el que se entrega y se sustenta.
+
+| Del documento | Dónde vive en el código |
+|---|---|
+| Paleta (`#0B0D0F` fondo, `#15191C` superficie, `#20262A` elevada, `#43E08B` acento, `#8B7CFF` secundario) | Tokens en [`frontend/src/styles.scss`](frontend/src/styles.scss). Ninguna pantalla escribe un color a mano |
+| Regla 60 / 30 / 10 | `--signal` sólo en CTA, estado activo y foco. Nunca como fondo de una zona grande |
+| Escala tipográfica (display 32-40, h1 24-28, h2 18-20, cuerpo 14-16, meta 12-13) | Variables `--fs-*`, con `clamp()` en los dos niveles superiores |
+| Familia **Inter** | Paquete `@fontsource/inter`, servido **desde la propia imagen** |
+| Radios 8-12 px, contenedor 1440 px, gutters 24/16 px | `--radius`, `--radius-sm`, `--container`, `--gutter` |
+| Motion 150-250 ms / 250-400 ms | `--t-micro`, `--t-panel`, con `prefers-reduced-motion` respetado |
+| Sidebar · main · player | [`app.component.ts`](frontend/src/app/app.component.ts): lateral fija, navegación inferior por debajo de 900 px y **barra de actividad persistente** |
+| Search prominente | Buscador del panel, que filtra por nombre, estado visible o identificador |
+| Iconografía lineal 20-24 px | [`icon.component.ts`](frontend/src/app/shared/icon.component.ts), SVG en línea con `currentColor` |
+
+Tres consecuencias que conviene conocer antes de tocar nada:
+
+- **La identidad es oscura y no hay variante clara.** El documento fija
+  `#0B0D0F` como fondo principal; mantener además una paleta clara duplicaría
+  cada decisión y contradiría la dirección creativa. Se declara
+  `color-scheme: dark` para que los controles nativos no aparezcan en blanco.
+- **La fuente no puede venir de Google Fonts.** La CSP declara
+  `font-src 'self' data:`, así que `fonts.gstatic.com` quedaría bloqueado y la
+  interfaz caería al tipo del sistema sin ningún aviso. Por eso Inter se empaqueta
+  con la aplicación (subconjunto `latin`, cinco pesos, ~140 kB en `woff2`).
+- **`optimization.styles.inlineCritical` está en `false`** en
+  [`frontend/angular.json`](frontend/angular.json). Con esa optimización activa,
+  Angular difiere la hoja de estilos mediante un `onload` **en línea**, y
+  `script-src 'self'` lo bloquea: la aplicación se queda con el CSS crítico y sin
+  tarjetas, botones ni distintivos. Está anotado también en
+  [`frontend/security-headers.conf`](frontend/security-headers.conf), que es donde
+  vive la política que lo obliga.
+
+El color **nunca** es el único indicador de estado, como exige el apartado de
+accesibilidad: cada distintivo lleva punto y texto, los estados en curso laten,
+el elemento activo de la navegación añade una barra al color y el fichero abierto
+del visor cambia además de peso.
 
 ### La API no mantiene estado
 

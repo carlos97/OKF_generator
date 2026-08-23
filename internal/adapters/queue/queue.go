@@ -16,9 +16,11 @@
 //     CABEZA, asi que un mensaje de 60 s delante bloquea a los de 5 s que van
 //     detras y el backoff observado no se corresponde con el disenado.
 //   - Los nombres y argumentos son CONSTANTES de Go, no variables de entorno.
-//     Parametrizarlos solo sirve para que alguien cambie un valor, RabbitMQ
-//     responda PRECONDITION_FAILED (406) al redeclarar y los tres servicios
-//     entren en crash-loop con `docker compose down -v` como unica salida.
+//     Parametrizarlos solo sirve para que alguien cambie un valor y RabbitMQ
+//     responda PRECONDITION_FAILED (406) al redeclarar. Ese 406 ya no es
+//     fatal: DeclareTopology recrea la cola incompatible si esta vacia (ver
+//     mas abajo), pero con los argumentos en el entorno el desajuste seria
+//     permanente en cuanto la cola tuviera mensajes.
 package queue
 
 import (
@@ -123,56 +125,143 @@ func (p *Publisher) Close() error {
 	return p.conn.Close()
 }
 
-// DeclareTopology crea exchanges y colas. La ejecuta un servicio one-shot; si
-// una cola ya existe con argumentos distintos, RabbitMQ devuelve 406 y aqui se
-// aborta con un mensaje explicito en vez de dejar a los servicios en bucle.
+// DeclareTopology crea exchanges y colas. La ejecuta un servicio one-shot.
+//
+// Cada declaracion abre su PROPIO canal. RabbitMQ cierra el canal en cuanto
+// responde PRECONDITION_FAILED (406), asi que compartir uno dejaria las
+// declaraciones siguientes fallando con "channel/connection is not open" y el
+// error visible ya no seria el que importa.
+//
+// Cuando una cola existe con argumentos distintos a los de este fichero -- el
+// caso tipico es un volumen `rabbitdata` creado por una version anterior del
+// codigo, sin `x-dead-letter-exchange` -- la topologia se REPARA en el sitio en
+// lugar de exigir `docker compose down -v`, que se llevaria por delante tambien
+// Postgres y MinIO. La reparacion solo procede si la cola esta VACIA, y esa
+// condicion no es una precaucion generica: el barredor unicamente republica
+// trabajos con enqueued_confirmed_at NULL, de modo que borrar una cola con
+// mensajes ya confirmados perderia trabajo que nada volveria a recuperar.
 func DeclareTopology(conn *amqp.Connection) error {
-	ch, err := conn.Channel()
-	if err != nil {
-		return err
-	}
-	defer ch.Close()
-
 	for _, e := range []string{ExchangeJobs, ExchangeRetry, ExchangeDLX} {
-		if err := ch.ExchangeDeclare(e, "direct", true, false, false, false, nil); err != nil {
-			return fmt.Errorf("declarar exchange %s: %w", e, err)
+		if err := declareExchange(conn, e); err != nil {
+			return err
 		}
 	}
 
-	// Cola de trabajo. Sin x-delivery-limit: el presupuesto de intentos lo
-	// gobierna la base de datos. Los nack sin requeue terminan en la DLQ; sin
-	// estos argumentos RabbitMQ los descartaria silenciosamente.
-	if _, err := ch.QueueDeclare(QueueJobs, true, false, false, false, amqp.Table{
-		"x-dead-letter-exchange":    ExchangeDLX,
-		"x-dead-letter-routing-key": RoutingKeyConvert,
-	}); err != nil {
-		return fmt.Errorf("declarar %s (posible PRECONDITION_FAILED por argumentos distintos; use 'docker compose down -v'): %w", QueueJobs, err)
+	// Cola de trabajo: sin x-delivery-limit, porque el presupuesto de intentos
+	// lo gobierna la base de datos. Los nack sin requeue terminan en la DLQ;
+	// sin estos argumentos RabbitMQ los descartaria silenciosamente.
+	//
+	// Cola de espera: sin consumidores. Los mensajes expiran por TTL DE COLA (no
+	// por mensaje) y el dead-letter-exchange los devuelve a la cola de trabajo.
+	// Al ser TTL de cola todos comparten plazo y no hay bloqueo de cabecera.
+	for _, q := range []struct {
+		name     string
+		exchange string
+		args     amqp.Table
+	}{
+		{QueueJobs, ExchangeJobs, amqp.Table{
+			"x-dead-letter-exchange":    ExchangeDLX,
+			"x-dead-letter-routing-key": RoutingKeyConvert,
+		}},
+		{QueueRetry, ExchangeRetry, amqp.Table{
+			"x-message-ttl":             int32(RetryTTLMillis),
+			"x-dead-letter-exchange":    ExchangeJobs,
+			"x-dead-letter-routing-key": RoutingKeyConvert,
+		}},
+		{QueueDLQ, ExchangeDLX, nil},
+	} {
+		if err := declareQueue(conn, q.name, q.args); err != nil {
+			return err
+		}
+		// La vinculacion se hace junto a su declaracion y no en un bucle
+		// aparte: si la cola acaba de recrearse, sus vinculaciones anteriores
+		// desaparecieron con ella.
+		if err := withChannel(conn, func(ch *amqp.Channel) error {
+			return ch.QueueBind(q.name, RoutingKeyConvert, q.exchange, false, nil)
+		}); err != nil {
+			return fmt.Errorf("vincular %s a %s: %w", q.name, q.exchange, err)
+		}
 	}
-	if err := ch.QueueBind(QueueJobs, RoutingKeyConvert, ExchangeJobs, false, nil); err != nil {
+	return nil
+}
+
+// withChannel ejecuta fn sobre un canal recien abierto y lo cierra al salir.
+func withChannel(conn *amqp.Connection, fn func(*amqp.Channel) error) error {
+	ch, err := conn.Channel()
+	if err != nil {
+		return fmt.Errorf("abrir canal: %w", err)
+	}
+	defer ch.Close()
+	return fn(ch)
+}
+
+// isPreconditionFailed distingue "ya existe con otra definicion" (406) de un
+// fallo de red o de permisos. Solo el primero se arregla borrando y volviendo a
+// declarar; tratar los demas igual esconderia problemas reales.
+func isPreconditionFailed(err error) bool {
+	var aerr *amqp.Error
+	return errors.As(err, &aerr) && aerr.Code == amqp.PreconditionFailed
+}
+
+func declareExchange(conn *amqp.Connection, name string) error {
+	declare := func(ch *amqp.Channel) error {
+		return ch.ExchangeDeclare(name, "direct", true, false, false, false, nil)
+	}
+
+	err := withChannel(conn, declare)
+	if err == nil {
+		return nil
+	}
+	if !isPreconditionFailed(err) {
+		return fmt.Errorf("declarar exchange %s: %w", name, err)
+	}
+
+	// Un exchange no almacena mensajes, asi que recrearlo no puede perder
+	// trabajo. Las unicas vinculaciones que le importan al sistema son las de
+	// esta misma funcion y se rehacen a continuacion.
+	mismatch := err
+	if err := withChannel(conn, func(ch *amqp.Channel) error {
+		return ch.ExchangeDelete(name, false, false)
+	}); err != nil {
+		return fmt.Errorf("el exchange %s existe con otra definicion (%v) y no se pudo borrar: %w", name, mismatch, err)
+	}
+	if err := withChannel(conn, declare); err != nil {
+		return fmt.Errorf("redeclarar exchange %s: %w", name, err)
+	}
+	fmt.Printf("topologia: exchange %s recreado (existia con otra definicion: %v)\n", name, mismatch)
+	return nil
+}
+
+func declareQueue(conn *amqp.Connection, name string, args amqp.Table) error {
+	declare := func(ch *amqp.Channel) error {
+		_, err := ch.QueueDeclare(name, true, false, false, false, args)
 		return err
 	}
 
-	// Cola de espera: sin consumidores. Los mensajes expiran por TTL DE COLA
-	// (no por mensaje) y el dead-letter-exchange los devuelve a la cola de
-	// trabajo. Al ser TTL de cola, todos los mensajes tienen el mismo plazo y
-	// no puede haber bloqueo de cabecera.
-	if _, err := ch.QueueDeclare(QueueRetry, true, false, false, false, amqp.Table{
-		"x-message-ttl":             int32(RetryTTLMillis),
-		"x-dead-letter-exchange":    ExchangeJobs,
-		"x-dead-letter-routing-key": RoutingKeyConvert,
-	}); err != nil {
-		return fmt.Errorf("declarar %s: %w", QueueRetry, err)
+	err := withChannel(conn, declare)
+	if err == nil {
+		return nil
 	}
-	if err := ch.QueueBind(QueueRetry, RoutingKeyConvert, ExchangeRetry, false, nil); err != nil {
-		return err
+	if !isPreconditionFailed(err) {
+		return fmt.Errorf("declarar %s: %w", name, err)
 	}
 
-	if _, err := ch.QueueDeclare(QueueDLQ, true, false, false, false, nil); err != nil {
-		return fmt.Errorf("declarar %s: %w", QueueDLQ, err)
-	}
-	if err := ch.QueueBind(QueueDLQ, RoutingKeyConvert, ExchangeDLX, false, nil); err != nil {
+	// ifEmpty=true es la salvaguarda, y la evalua el broker de forma atomica: si
+	// quedan mensajes, el borrado se rechaza y aqui se aborta con instrucciones
+	// en vez de tirar trabajo a la basura en silencio.
+	mismatch := err
+	if err := withChannel(conn, func(ch *amqp.Channel) error {
+		_, err := ch.QueueDelete(name, false, true, false)
 		return err
+	}); err != nil {
+		return fmt.Errorf("la cola %s existe con argumentos incompatibles (%v) y no se puede recrear porque no esta vacia; "+
+			"deje que los workers la vacien y repita `docker compose up topology`, o descarte su contenido con "+
+			"`docker compose exec rabbitmq rabbitmqctl delete_queue %s`: %w", name, mismatch, name, err)
 	}
+	if err := withChannel(conn, declare); err != nil {
+		return fmt.Errorf("redeclarar %s: %w", name, err)
+	}
+	fmt.Printf("topologia: cola %s recreada (existia con argumentos incompatibles: %v)\n", name, mismatch)
 	return nil
 }
 
