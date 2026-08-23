@@ -7,8 +7,13 @@ import (
 
 	"github.com/uniandes-isis4426/okfp/internal/adapters/postgres"
 	"github.com/uniandes-isis4426/okfp/internal/domain"
-	"github.com/uniandes-isis4426/okfp/internal/platform/logging"
 )
+
+// Enqueuer queda limitado al endpoint de replay, una herramienta autenticada
+// para demostrar que una entrega duplicada no publica un segundo bundle.
+type Enqueuer interface {
+	Publish(ctx context.Context, msg domain.JobMessage) error
+}
 
 // JobService atiende consulta de estado, reintento, cancelacion y reinyeccion.
 type JobService struct {
@@ -42,7 +47,8 @@ func (s *JobService) List(ctx context.Context, ownerID uuid.UUID, limit, offset 
 	return s.jobs.List(ctx, ownerID, limit, offset)
 }
 
-// Retry crea un trabajo hijo enlazado al fallido y lo encola.
+// Retry crea un trabajo hijo enlazado al fallido y registra su publicacion en
+// el outbox dentro de la misma transaccion.
 //
 // Es idempotente por construccion: el indice unico parcial sobre parent_job_id
 // impide dos hijos del mismo padre, y en caso de doble pulsacion el repositorio
@@ -54,19 +60,6 @@ func (s *JobService) Retry(ctx context.Context, ownerID, parentID uuid.UUID) (*d
 		return nil, err
 	}
 
-	msg := domain.JobMessage{
-		JobID: child.ID, OwnerID: ownerID, DocumentID: child.DocumentID, Attempt: 1,
-	}
-	if err := s.queue.Publish(ctx, msg); err != nil {
-		logging.From(ctx).Error("no se pudo encolar el reintento",
-			"job_id", child.ID.String(), "err", err.Error())
-		// El trabajo queda persistido y el barredor lo recogera.
-		return child, nil
-	}
-	if err := s.jobs.MarkEnqueued(ctx, child.ID); err != nil {
-		logging.From(ctx).Warn("no se pudo confirmar el encolado del reintento",
-			"job_id", child.ID.String(), "err", err.Error())
-	}
 	return child, nil
 }
 

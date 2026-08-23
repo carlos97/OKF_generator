@@ -94,10 +94,11 @@ func TempPrefix(jobID string, attempt int) string {
 	return fmt.Sprintf("tmp/%s/%d/", jobID, attempt)
 }
 
-// PublishedPrefix es el prefijo servible. Es determinista a partir del trabajo:
-// dos ejecuciones escriben el mismo sitio y no dos bundles distintos.
-func PublishedPrefix(ownerID, jobID string) string {
-	return fmt.Sprintf("bundles/%s/%s/", ownerID, jobID)
+// PublishedPrefix es el prefijo servible de UNA promocion. El identificador de
+// promocion evita que un worker que perdio el lease escriba en el prefijo del
+// worker que lo recupero; la fila de bundles decide cual prefijo es visible.
+func PublishedPrefix(ownerID, jobID, promotionID string) string {
+	return fmt.Sprintf("bundles/%s/%s/%s/", ownerID, jobID, promotionID)
 }
 
 // QuarantinePrefix guarda los bundles que no superaron la validacion, para

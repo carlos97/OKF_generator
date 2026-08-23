@@ -78,7 +78,7 @@ func run() error {
 	bundles := postgres.NewBundleRepo(db)
 
 	auth := apiapp.NewAuthService(users, cfg.Auth)
-	docSvc := apiapp.NewDocumentService(docs, jobs, store, publisher, cfg.Limit, cfg.Work.EnablePDF)
+	docSvc := apiapp.NewDocumentService(docs, jobs, store, cfg.Limit, cfg.Work.MaxAttempts, cfg.Work.EnablePDF)
 	jobSvc := apiapp.NewJobService(jobs, publisher)
 	bundleSvc := apiapp.NewBundleService(bundles, store, auth, cfg.Auth)
 

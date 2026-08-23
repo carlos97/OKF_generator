@@ -239,6 +239,7 @@ services:
       SWEEPER_INTERVAL: ${SWEEPER_INTERVAL:-30s}
       SWEEPER_STALE_AFTER: ${SWEEPER_STALE_AFTER:-60s}
       MAX_ATTEMPTS: ${MAX_ATTEMPTS:-3}
+      RETRY_DELAY: ${RETRY_DELAY:-30s}
       ENABLE_PDF: ${ENABLE_PDF:-true}
     # SIN "ports": obligatorio para poder escalar (`--scale worker=3`).
     depends_on:
@@ -252,6 +253,14 @@ services:
     # legitimas y cada reinicio multiplicaria los intentos.
     stop_grace_period: 150s
     restart: unless-stopped
+    healthcheck:
+      # La sonda corre dentro del contenedor y alcanza solo el listener de
+      # loopback; no se publica ningun puerto del worker.
+      test: ["CMD", "busybox", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
     networks: [core]
     deploy:
       resources:

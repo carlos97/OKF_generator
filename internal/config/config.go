@@ -172,6 +172,15 @@ func (c *Config) validate() error {
 			"JOB_LEASE (%s) debe ser mayor que JOB_TIMEOUT (%s) mas un margen de subida",
 			c.Work.JobLease, c.Work.JobTimeout))
 	}
+	if c.Work.Concurrency < 1 {
+		problems = append(problems, "WORKER_CONCURRENCY debe ser al menos 1")
+	}
+	if c.Work.MaxAttempts < 1 {
+		problems = append(problems, "MAX_ATTEMPTS debe ser al menos 1")
+	}
+	if c.Work.RetryDelay <= 0 {
+		problems = append(problems, "RETRY_DELAY debe ser mayor que cero")
+	}
 	if c.Limit.ParseMaxBytes > c.Limit.MaxUploadBytes {
 		problems = append(problems, "PARSE_MAX_BYTES no puede superar MAX_UPLOAD_BYTES")
 	}

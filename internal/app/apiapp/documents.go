@@ -18,29 +18,23 @@ import (
 	"github.com/uniandes-isis4426/okfp/internal/adapters/postgres"
 	"github.com/uniandes-isis4426/okfp/internal/config"
 	"github.com/uniandes-isis4426/okfp/internal/domain"
-	"github.com/uniandes-isis4426/okfp/internal/platform/logging"
 )
-
-// Enqueuer publica el trabajo en la cola.
-type Enqueuer interface {
-	Publish(ctx context.Context, msg domain.JobMessage) error
-}
 
 // DocumentService atiende la carga de documentos.
 type DocumentService struct {
-	docs   *postgres.DocumentRepo
-	jobs   *postgres.JobRepo
-	store  *objectstore.Store
-	queue  Enqueuer
-	limits config.LimitConfig
-	pdf    bool
+	docs        *postgres.DocumentRepo
+	jobs        *postgres.JobRepo
+	store       *objectstore.Store
+	limits      config.LimitConfig
+	maxAttempts int
+	pdf         bool
 }
 
 func NewDocumentService(
 	docs *postgres.DocumentRepo, jobs *postgres.JobRepo,
-	store *objectstore.Store, q Enqueuer, limits config.LimitConfig, pdfEnabled bool,
+	store *objectstore.Store, limits config.LimitConfig, maxAttempts int, pdfEnabled bool,
 ) *DocumentService {
-	return &DocumentService{docs: docs, jobs: jobs, store: store, queue: q, limits: limits, pdf: pdfEnabled}
+	return &DocumentService{docs: docs, jobs: jobs, store: store, limits: limits, maxAttempts: maxAttempts, pdf: pdfEnabled}
 }
 
 // UploadResult es la respuesta inmediata de la carga.
@@ -66,13 +60,8 @@ type UploadResult struct {
 // ORDEN DE OPERACIONES, y es lo importante de esta funcion:
 //
 //  1. Subir el objeto. Si algo falla despues, sobra un objeto; nunca falta.
-//  2. COMMIT de documento + trabajo en una transaccion.
-//  3. Publicar en la cola y esperar el confirm.
-//
-// Publicar antes del commit abre una carrera real: con el worker ocioso el
-// consumo ocurre en milisegundos, el worker recibiria un job_id que aun no
-// existe y el trabajo se perderia de forma intermitente, que es el peor modo de
-// fallo posible para una sustentacion.
+//  2. COMMIT de documento + trabajo + outbox en una transaccion.
+//  3. El barredor del worker despacha el outbox y espera el confirm.
 func (s *DocumentService) Upload(
 	ctx context.Context, ownerID uuid.UUID, part *multipart.Part, declaredType string,
 ) (*UploadResult, error) {
@@ -138,27 +127,11 @@ func (s *DocumentService) Upload(
 	}
 	job := &domain.Job{
 		ID: uuid.New(), OwnerID: ownerID, DocumentID: documentID,
-		Status: domain.JobQueued, MaxAttempts: 3,
+		Status: domain.JobQueued, MaxAttempts: s.maxAttempts,
 	}
 
 	if err := s.jobs.CreateWithDocument(ctx, doc, job); err != nil {
 		return nil, err
-	}
-
-	msg := domain.JobMessage{
-		JobID: job.ID, OwnerID: ownerID, DocumentID: documentID, Attempt: 1,
-	}
-	if err := s.queue.Publish(ctx, msg); err != nil {
-		// El trabajo ya esta persistido: el barredor lo republicara. Se informa
-		// del problema pero NO se pierde el trabajo.
-		logging.From(ctx).Error("no se pudo publicar el trabajo en la cola",
-			"job_id", job.ID.String(), "err", err.Error())
-		return nil, domain.ErrUnavailable.WithMessage(
-			"El documento se guardo pero la cola no confirmo el encolado; el trabajo se reintentara automaticamente").Wrap(err)
-	}
-	if err := s.jobs.MarkEnqueued(ctx, job.ID); err != nil {
-		logging.From(ctx).Warn("no se pudo marcar el encolado confirmado",
-			"job_id", job.ID.String(), "err", err.Error())
 	}
 
 	return &UploadResult{

@@ -10,8 +10,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
-	"io"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,18 +25,11 @@ import (
 	"github.com/uniandes-isis4426/okfp/internal/platform/logging"
 )
 
-// Retrier reprograma y archiva trabajos.
-type Retrier interface {
-	PublishRetry(ctx context.Context, msg domain.JobMessage) error
-	PublishDLQ(ctx context.Context, msg domain.JobMessage) error
-}
-
 type Service struct {
 	jobs    *postgres.JobRepo
 	docs    *postgres.DocumentRepo
 	bundles *postgres.BundleRepo
 	store   *objectstore.Store
-	retry   Retrier
 	cfg     *config.Config
 
 	workerID string
@@ -46,10 +37,10 @@ type Service struct {
 
 func NewService(
 	jobs *postgres.JobRepo, docs *postgres.DocumentRepo, bundles *postgres.BundleRepo,
-	store *objectstore.Store, retry Retrier, cfg *config.Config, workerID string,
+	store *objectstore.Store, cfg *config.Config, workerID string,
 ) *Service {
 	return &Service{jobs: jobs, docs: docs, bundles: bundles, store: store,
-		retry: retry, cfg: cfg, workerID: workerID}
+		cfg: cfg, workerID: workerID}
 }
 
 // Handle procesa una entrega de la cola y decide si se confirma o se descarta.
@@ -215,6 +206,7 @@ func (s *Service) process(ctx context.Context, log logger, job *domain.Job) queu
 		}
 		if err := s.jobs.MarkInvalid(ctx, job.ID, s.workerID, out.Report); err != nil {
 			log.Error("no se pudo registrar el resultado invalido", "err", err.Error())
+			return s.finishCanceledOrNack(ctx, job)
 		}
 		return queue.Ack
 	}
@@ -252,7 +244,7 @@ func (s *Service) publish(ctx context.Context, log logger, job *domain.Job, out 
 		JobID:      job.ID,
 		OwnerID:    job.OwnerID,
 		DocumentID: job.DocumentID,
-		Prefix:     objectstore.PublishedPrefix(job.OwnerID.String(), job.ID.String()),
+		Prefix:     objectstore.PublishedPrefix(job.OwnerID.String(), job.ID.String(), uuid.NewString()),
 		Status:     domain.BundlePromoting,
 		UnitCount:  out.Units,
 		TotalBytes: out.FS.TotalBytes(),
@@ -263,6 +255,9 @@ func (s *Service) publish(ctx context.Context, log logger, job *domain.Job, out 
 		return err
 	}
 	if !claimed {
+		if canceled, err := s.jobs.IsCancelRequested(ctx, job.ID); err == nil && canceled {
+			return s.jobs.FinishCanceled(ctx, job.ID, s.workerID)
+		}
 		log.Info("otro intento ya publico este bundle; se descarta el trabajo duplicado")
 		_ = s.store.RemovePrefix(ctx, s.store.BucketBundles(), tmpPrefix)
 		_ = s.jobs.AppendEvent(ctx, job.ID, job.Attempt, domain.EventDuplicateIgnored,
@@ -275,7 +270,7 @@ func (s *Service) publish(ctx context.Context, log logger, job *domain.Job, out 
 		src := tmpPrefix + f.Path
 		dst := bundle.Prefix + f.Path
 		if err := s.store.Copy(ctx, s.store.BucketBundles(), src, dst); err != nil {
-			_ = s.bundles.DeleteClaim(ctx, bundle.ID)
+			_ = s.bundles.DeleteClaim(ctx, bundle.ID, s.workerID)
 			return err
 		}
 		files = append(files, domain.BundleFile{
@@ -288,7 +283,7 @@ func (s *Service) publish(ctx context.Context, log logger, job *domain.Job, out 
 		// Si la cancelacion gano la carrera, o el lease se perdio, no se
 		// publica: la transaccion lo detecto por filas afectadas.
 		log.Warn("no se pudo cerrar la publicacion", "err", err.Error())
-		_ = s.bundles.DeleteClaim(ctx, bundle.ID)
+		_ = s.bundles.DeleteClaim(ctx, bundle.ID, s.workerID)
 		return err
 	}
 
@@ -321,7 +316,9 @@ func (s *Service) fail(ctx context.Context, log logger, job *domain.Job, err err
 		"code", fault.Code, "kind", kindName(fault.Kind), "err", err.Error())
 
 	if fault.Kind == domain.FaultPermanent {
-		_ = s.jobs.MarkFailed(ctx, job.ID, s.workerID, domain.JobFailed, fault.Code, fault.Message)
+		if err := s.jobs.MarkFailed(ctx, job.ID, s.workerID, domain.JobFailed, fault.Code, fault.Message); err != nil {
+			return s.finishCanceledOrNack(ctx, job)
+		}
 		return queue.Ack
 	}
 
@@ -329,30 +326,51 @@ func (s *Service) fail(ctx context.Context, log logger, job *domain.Job, err err
 	// NUNCA se usa nack con requeue: reencolaria al instante y produciria un
 	// bucle de fuego rapido que saturaria al worker y a la base de datos
 	// mientras la dependencia caida se recupera.
-	scheduled, next, serr := s.jobs.ScheduleRetry(ctx, job.ID, s.workerID, fault.Code, fault.Message)
+	scheduled, next, canceled, serr := s.jobs.ScheduleRetry(ctx, job.ID, s.workerID, fault.Code, fault.Message, s.cfg.Work.RetryDelay)
 	if serr != nil {
 		log.Error("no se pudo reprogramar el reintento", "err", serr.Error())
 		return queue.NackDrop
 	}
-
-	msg := domain.JobMessage{
-		JobID: job.ID, OwnerID: job.OwnerID, DocumentID: job.DocumentID, Attempt: next,
-	}
-
-	if !scheduled {
-		// Agotados los intentos.
-		_ = s.jobs.MarkFailed(ctx, job.ID, s.workerID, domain.JobDead, fault.Code, fault.Message)
-		if err := s.retry.PublishDLQ(ctx, msg); err != nil {
-			log.Error("no se pudo archivar en la cola de fallos", "err", err.Error())
+	if canceled {
+		if err := s.jobs.FinishCanceled(ctx, job.ID, s.workerID); err != nil {
+			log.Error("no se pudo cerrar la cancelacion", "err", err.Error())
+			return queue.NackDrop
 		}
 		return queue.Ack
 	}
 
-	if err := s.retry.PublishRetry(ctx, msg); err != nil {
-		log.Error("no se pudo publicar en la cola de espera", "err", err.Error())
+	if !scheduled {
+		// Agotados los intentos: el estado terminal y la intencion de envio a
+		// DLQ quedan juntos en el outbox. Un crash no puede dejar un dead sin
+		// su evidencia en la cola de fallos.
+		canceled, err := s.jobs.MarkDeadWithOutbox(ctx, job.ID, s.workerID, fault.Code, fault.Message)
+		if err != nil {
+			return s.finishCanceledOrNack(ctx, job)
+		}
+		if canceled {
+			if err := s.jobs.FinishCanceled(ctx, job.ID, s.workerID); err != nil {
+				log.Error("no se pudo cerrar la cancelacion", "err", err.Error())
+				return queue.NackDrop
+			}
+		}
+		return queue.Ack
+	}
+
+	// ScheduleRetry persistio estado, disponibilidad y outbox en UNA sola
+	// transaccion. El barredor publicara tras confirm; confirmar esta entrega
+	// aqui no puede perder ni adelantar el reintento.
+	log.Info("reintento registrado en outbox", "siguiente_intento", next)
+	return queue.Ack
+}
+
+func (s *Service) finishCanceledOrNack(ctx context.Context, job *domain.Job) queue.Decision {
+	canceled, err := s.jobs.IsCancelRequested(ctx, job.ID)
+	if err != nil || !canceled {
 		return queue.NackDrop
 	}
-	log.Info("reintento programado", "siguiente_intento", next)
+	if err := s.jobs.FinishCanceled(ctx, job.ID, s.workerID); err != nil {
+		return queue.NackDrop
+	}
 	return queue.Ack
 }
 
@@ -396,6 +414,3 @@ func kindName(k domain.FaultKind) string {
 	}
 	return "transitorio"
 }
-
-var _ = io.Discard
-var _ = fmt.Sprintf

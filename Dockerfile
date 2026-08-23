@@ -46,7 +46,7 @@ ENTRYPOINT ["/app"]
 # se queda en distroless: cada imagen dimensionada a su funcion.
 FROM debian:12-slim AS worker
 RUN apt-get update \
- && apt-get install -y --no-install-recommends poppler-utils ca-certificates \
+ && apt-get install -y --no-install-recommends busybox poppler-utils ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 RUN useradd --uid 65532 --create-home --shell /usr/sbin/nologin okf
 COPY --from=build /out/app /app

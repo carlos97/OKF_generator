@@ -92,3 +92,19 @@ func TestLeaseMayorQueTimeout(t *testing.T) {
 		t.Errorf("el mensaje de error no menciona JOB_LEASE: %v", err)
 	}
 }
+
+func TestWorkerSettingsInvalidosFallanAlArrancar(t *testing.T) {
+	t.Setenv("WORKER_CONCURRENCY", "0")
+	t.Setenv("MAX_ATTEMPTS", "0")
+	t.Setenv("RETRY_DELAY", "0s")
+
+	if _, err := config.Load(); err == nil {
+		t.Fatal("se esperaba error para configuracion invalida del worker")
+	} else {
+		for _, key := range []string{"WORKER_CONCURRENCY", "MAX_ATTEMPTS", "RETRY_DELAY"} {
+			if !strings.Contains(err.Error(), key) {
+				t.Errorf("el error no menciona %s: %v", key, err)
+			}
+		}
+	}
+}

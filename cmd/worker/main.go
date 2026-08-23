@@ -12,9 +12,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -92,7 +96,7 @@ func run() error {
 	}
 	defer publisher.Close()
 
-	consumer, err := queue.NewConsumer(cfg.AMQP.URL(), cfg.AMQP.Prefetch, workerID)
+	consumer, err := queue.NewConsumer(cfg.AMQP.URL(), cfg.AMQP.Prefetch, cfg.Work.Concurrency, workerID)
 	if err != nil {
 		return fmt.Errorf("cola (consumidor): %w", err)
 	}
@@ -102,18 +106,69 @@ func run() error {
 		postgres.NewJobRepo(db),
 		postgres.NewDocumentRepo(db),
 		postgres.NewBundleRepo(db),
-		store, publisher, cfg, workerID,
+		store, cfg, workerID,
 	)
 
 	// El barredor vive aqui, no en la API, y esta protegido por un cerrojo de
 	// aviso: con varias replicas solo una barre.
 	go svc.RunSweeper(workCtx, publisher)
 
-	log.Info("consumiendo trabajos", "cola", queue.QueueJobs, "prefetch", cfg.AMQP.Prefetch)
+	// La sonda se limita a loopback: Docker puede comprobar que este proceso
+	// esta listo para consumir sin abrir un puerto que impida escalar workers.
+	health := newWorkerHealth(workerID)
+	healthServer := &http.Server{Addr: "127.0.0.1:8081", Handler: health}
+	healthListener, err := net.Listen("tcp", healthServer.Addr)
+	if err != nil {
+		return fmt.Errorf("sonda de salud: %w", err)
+	}
+	go func() {
+		if err := healthServer.Serve(healthListener); err != nil && err != http.ErrServerClosed {
+			log.Error("servidor de salud del worker detenido", "err", err.Error())
+		}
+	}()
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := healthServer.Shutdown(shutdownCtx); err != nil {
+			log.Warn("no se pudo detener la sonda de salud", "err", err.Error())
+		}
+	}()
+	health.ready.Store(true)
+
+	log.Info("consumiendo trabajos", "cola", queue.QueueJobs,
+		"prefetch", consumer.Prefetch(), "concurrencia", cfg.Work.Concurrency)
 	if err := consumer.Consume(rootCtx, workCtx, svc.Handle); err != nil {
 		return fmt.Errorf("consumo: %w", err)
 	}
 
 	log.Info("worker detenido ordenadamente")
 	return nil
+}
+
+// workerHealth ofrece una señal operativa mínima para Docker y soporte. No es
+// un endpoint público: el listener está ligado estrictamente a 127.0.0.1.
+type workerHealth struct {
+	ready    atomic.Bool
+	workerID string
+	started  time.Time
+}
+
+func newWorkerHealth(workerID string) *workerHealth {
+	return &workerHealth{workerID: workerID, started: time.Now().UTC()}
+}
+
+func (h *workerHealth) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/readyz" || r.Method != http.MethodGet {
+		http.NotFound(w, r)
+		return
+	}
+	if !h.ready.Load() {
+		http.Error(w, "worker no listo", http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"status": "ready", "worker_id": h.workerID, "version": version,
+		"uptime_seconds": int64(time.Since(h.started).Seconds()),
+	})
 }
