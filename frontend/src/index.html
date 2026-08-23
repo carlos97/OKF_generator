@@ -5,7 +5,15 @@
     <title>Bundles OKF</title>
     <base href="/" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="light dark" />
+    <!-- La identidad visual es oscura por definicion y no hay variante clara,
+         asi que se declara un unico esquema: con "light dark" el navegador
+         pintaria en claro los controles nativos y las barras de desplazamiento
+         dentro de una interfaz negra. -->
+    <meta name="color-scheme" content="dark" />
+    <!-- Color del fondo principal (#0B0D0F): evita el destello blanco entre la
+         primera pintura y la carga de los estilos, y tine la barra del
+         navegador en movil. -->
+    <meta name="theme-color" content="#0b0d0f" />
   </head>
   <body>
     <okf-root></okf-root>

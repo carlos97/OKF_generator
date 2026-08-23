@@ -4,28 +4,33 @@ import { RouterLink } from '@angular/router';
 
 import { ApiService } from '../../core/api.service';
 import { Bundle, BundleFile } from '../../core/models';
+import { IconComponent } from '../../shared/icon.component';
 import { MarkdownPipe, parseFrontMatter } from '../../shared/markdown.pipe';
 import { describeError } from '../auth/login.component';
 
 @Component({
   selector: 'okf-bundle-viewer',
   standalone: true,
-  imports: [RouterLink, DecimalPipe, MarkdownPipe],
+  imports: [RouterLink, DecimalPipe, IconComponent, MarkdownPipe],
   template: `
-    <a routerLink="/" class="small">&larr; Volver al panel</a>
+    <a routerLink="/" class="back">
+      <okf-icon name="back" />
+      Volver al panel
+    </a>
 
     @if (error()) {
-      <div class="alert alert--err" style="margin-top:1rem">{{ error() }}</div>
+      <div class="alert alert--err top">{{ error() }}</div>
     }
 
     @if (bundle(); as b) {
-      <section class="card" style="margin-top:1rem">
+      <section class="card top enter">
         <div class="spread">
-          <div>
-            <h1 style="margin-bottom:0.35rem">Bundle OKF</h1>
+          <div class="ident">
+            <p class="eyebrow">Bundle</p>
+            <h1 class="title">Bundle OKF</h1>
             <code class="small">{{ b.id }}</code>
             @if (b.source_filename) {
-              <div class="muted small" style="margin-top:0.25rem">
+              <div class="meta source">
                 generado desde <strong>{{ b.source_filename }}</strong>
               </div>
             }
@@ -33,28 +38,36 @@ import { describeError } from '../auth/login.component';
           <div class="row">
             <span class="badge badge--ok">Publicado</span>
             <button type="button" class="btn-secondary" (click)="downloadOriginal()">
-              Descargar original
+              <okf-icon name="file" />
+              Original
             </button>
             <button type="button" class="btn-primary" (click)="download()">
+              <okf-icon name="download" />
               Descargar ZIP
             </button>
           </div>
         </div>
 
-        <div class="grid">
-          <div><span class="muted small">Unidades</span><br />{{ b.unit_count }}</div>
-          <div>
-            <span class="muted small">Tamano</span><br />
-            {{ (b.total_bytes / 1024) | number: '1.0-1' }} KiB
+        <div class="tiles">
+          <div class="tile">
+            <span class="tile-label">Unidades</span>
+            <span class="tile-value">{{ b.unit_count }}</span>
           </div>
-          <div><span class="muted small">Ficheros</span><br />{{ (b.files ?? []).length }}</div>
+          <div class="tile">
+            <span class="tile-label">Tamano</span>
+            <span class="tile-value">{{ (b.total_bytes / 1024) | number: '1.0-1' }} KiB</span>
+          </div>
+          <div class="tile">
+            <span class="tile-label">Ficheros</span>
+            <span class="tile-value">{{ (b.files ?? []).length }}</span>
+          </div>
         </div>
       </section>
 
       <div class="viewer">
         <!-- --------------------------------------------- arbol de ficheros -- -->
         <aside class="card tree">
-          <h2 style="margin-top:0">Contenido</h2>
+          <p class="eyebrow">Contenido</p>
           <ul>
             @for (f of rootFiles(); track f.path) {
               <li>
@@ -62,17 +75,19 @@ import { describeError } from '../auth/login.component';
                   type="button"
                   class="file"
                   [class.file--active]="f.path === selected()"
+                  [attr.aria-current]="f.path === selected() ? 'true' : null"
                   (click)="open(f)"
                 >
+                  <okf-icon name="file" />
                   <span class="name">{{ f.path }}</span>
-                  <span class="size muted small">{{ (f.size_bytes / 1024) | number: '1.0-1' }} KiB</span>
+                  <span class="size meta">{{ (f.size_bytes / 1024) | number: '1.0-1' }} KiB</span>
                 </button>
               </li>
             }
           </ul>
 
           @if (assetFiles().length > 0) {
-            <h3>assets/</h3>
+            <p class="eyebrow group">assets/</p>
             <ul>
               @for (f of assetFiles(); track f.path) {
                 <li>
@@ -80,10 +95,12 @@ import { describeError } from '../auth/login.component';
                     type="button"
                     class="file"
                     [class.file--active]="f.path === selected()"
+                    [attr.aria-current]="f.path === selected() ? 'true' : null"
                     (click)="open(f)"
                   >
+                    <okf-icon name="image" />
                     <span class="name">{{ f.path.replace('assets/', '') }}</span>
-                    <span class="size muted small">{{ (f.size_bytes / 1024) | number: '1.0-1' }} KiB</span>
+                    <span class="size meta">{{ (f.size_bytes / 1024) | number: '1.0-1' }} KiB</span>
                   </button>
                 </li>
               }
@@ -94,9 +111,9 @@ import { describeError } from '../auth/login.component';
         <!-- --------------------------------------------- previsualizacion -- -->
         <article class="card preview">
           @if (selected()) {
-            <div class="spread">
-              <h2 style="margin:0"><code>{{ selected() }}</code></h2>
-              <button type="button" class="btn-ghost small-btn" (click)="raw.set(!raw())">
+            <div class="spread pv-head">
+              <h2 class="pv-title"><code>{{ selected() }}</code></h2>
+              <button type="button" class="btn-ghost btn--sm" (click)="raw.set(!raw())">
                 {{ raw() ? 'Ver renderizado' : 'Ver fuente' }}
               </button>
             </div>
@@ -131,36 +148,69 @@ import { describeError } from '../auth/login.component';
         </article>
       </div>
     } @else if (!error()) {
-      <p class="muted" style="margin-top:1rem">Cargando…</p>
+      <p class="muted top row"><span class="spinner"></span> Cargando…</p>
     }
   `,
   styles: `
-    .grid {
-      display: grid; gap: 0.9rem; margin-top: 1rem;
-      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    .back {
+      display: inline-flex; align-items: center; gap: 0.3rem;
+      color: var(--muted); text-decoration: none; font-size: var(--fs-meta); font-weight: 600;
     }
+    .back:hover { color: var(--text); }
+    .top { margin-top: 1rem; }
+
+    .ident { min-width: 0; }
+    .title { margin: 0 0 0.35rem; }
+    .source { margin-top: 0.3rem; }
+    .tiles { margin-top: 1.1rem; }
+    .spread button { display: inline-flex; align-items: center; gap: 0.4rem; }
+
     .viewer {
-      display: grid; gap: 1rem; margin-top: 1rem;
-      grid-template-columns: minmax(220px, 300px) 1fr;
+      display: grid; gap: var(--gutter); margin-top: var(--gutter);
+      grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
       align-items: start;
     }
-    .tree ul { list-style: none; padding: 0; margin: 0 0 0.5rem; }
-    .tree h3 { font-size: 0.85rem; color: var(--text-2); margin: 1rem 0 0.4rem; }
+
+    .tree { position: sticky; top: var(--gutter); }
+    .tree ul { list-style: none; padding: 0; margin: 0.5rem 0 0; }
+    .group { margin-top: 1.1rem; }
     .file {
-      display: flex; justify-content: space-between; gap: 0.5rem; width: 100%;
+      display: flex; align-items: center; gap: 0.5rem; width: 100%;
       background: transparent; border: none; text-align: left;
-      padding: 0.35rem 0.5rem; border-radius: 6px; color: inherit;
+      padding: 0.4rem 0.55rem; border-radius: var(--radius-sm);
+      color: var(--muted); font-weight: 500;
+      box-shadow: inset 3px 0 0 transparent;
     }
-    .file:hover { background: var(--surface-3); }
-    .file--active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
-    .file .name { overflow-wrap: anywhere; font-size: 0.87rem; }
-    .preview { min-height: 300px; overflow-x: auto; }
-    .fm { margin: 0.75rem 0 1rem; width: auto; }
-    .fm th { width: 140px; }
-    .asset-img { max-width: 100%; border: 1px solid var(--border); border-radius: 6px; }
-    .small-btn { padding: 0.25rem 0.55rem; font-size: 0.8rem; }
-    @media (max-width: 860px) {
-      .viewer { grid-template-columns: 1fr; }
+    .file:hover { background: var(--elevated); color: var(--text); }
+    /* Fichero abierto: acento, peso y barra lateral. Tres senales, para que se
+       distinga tambien sin percibir el color (documento, seccion 05). */
+    .file--active {
+      background: var(--signal-tint);
+      color: var(--signal);
+      font-weight: 700;
+      box-shadow: inset 3px 0 0 var(--signal);
+    }
+    .file okf-icon svg { width: 16px; height: 16px; }
+    .file .name { overflow-wrap: anywhere; font-size: 0.87rem; flex: 1; }
+    .file .size { flex: none; }
+
+    .preview { min-height: 320px; overflow-x: auto; }
+    .pv-head { border-bottom: 1px solid var(--line); padding-bottom: 0.75rem; margin-bottom: 1rem; }
+    .pv-title { margin: 0; font-size: 1rem; }
+    .pv-title code { color: var(--text); }
+    .fm { margin: 0 0 1.25rem; width: auto; background: var(--night); border-radius: var(--radius-sm); }
+    /* Las claves del front matter son DATOS del fichero, no rotulos de la
+       interfaz: se muestran tal como estan escritas. El text-transform de
+       table.data las ensenaria en mayusculas y el usuario leeria una clave que
+       no es la que hay en el .md. */
+    .fm th { width: 140px; text-transform: none; letter-spacing: 0; font-size: var(--fs-meta); }
+    .asset-img { max-width: 100%; border: 1px solid var(--line); border-radius: var(--radius-sm); }
+
+    /* Por debajo de 900 px el arbol pasa a ser una tira sobre el contenido, que
+       es lo unico razonable: dos columnas de 220 px no caben en un telefono. */
+    @media (max-width: 900px) {
+      .viewer { grid-template-columns: minmax(0, 1fr); }
+      .tree { position: static; }
     }
   `,
 })

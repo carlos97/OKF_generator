@@ -15,7 +15,15 @@
     "tanto en el host como en la imagen node:22.12 del Dockerfile.",
     "markdown-it + dompurify en lugar de marked: markdown-it permite desactivar",
     "por completo el HTML embebido (html:false), de modo que un <script> dentro",
-    "de un concepto .md se escapa como texto y nunca llega a existir como HTML."
+    "de un concepto .md se escapa como texto y nunca llega a existir como HTML.",
+    "@fontsource/inter y NO Google Fonts: Inter es la familia que fija el",
+    "documento de identidad visual, y la CSP del frontend declara font-src",
+    "'self' data:, asi que una peticion a fonts.gstatic.com la bloquearia el",
+    "navegador y la interfaz caeria al tipo del sistema sin ningun aviso. En",
+    "angular.json se importan solo el subconjunto latin y los cinco pesos que",
+    "usa la escala tipografica (400 cuerpo, 500 metadata, 600 navegacion, 700",
+    "titulares, 800 display); el paquete completo traeria cirilico, griego y",
+    "vietnamita sin usarlos."
   ],
   "dependencies": {
     "@angular/animations": "^21.0.0",
@@ -27,6 +35,7 @@
     "@angular/material": "^21.0.0",
     "@angular/platform-browser": "^21.0.0",
     "@angular/router": "^21.0.0",
+    "@fontsource/inter": "5.3.0",
     "dompurify": "^3.2.4",
     "markdown-it": "^14.1.0",
     "rxjs": "~7.8.0",

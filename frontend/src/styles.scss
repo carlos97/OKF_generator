@@ -1,160 +1,343 @@
 /* ---------------------------------------------------------------------------
-   Estilos globales.
+   Sistema de diseno global.
 
-   Se definen tokens en :root (paleta clara) y se redefinen SOLO los tokens en
-   el bloque de esquema oscuro. De ese modo ningun color tiene su unica
-   definicion dentro de una media query, y la interfaz es legible en las dos
-   preferencias del sistema, que es lo que el evaluador vera en su maquina.
+   Implementa el documento de identidad visual SONORA (v01 · 2026) sobre esta
+   aplicacion: paleta, escala tipografica, radios, motion y componentes salen de
+   ahi y no de decisiones puntuales por pantalla. Los valores viven como tokens
+   en :root para que ninguna pantalla vuelva a escribir un color a mano; si un
+   componente necesita un color que no este aqui, lo que falta es el token.
+
+   La identidad es OSCURA por definicion ("Dark · immersive · energetic", fondo
+   principal #0B0D0F), asi que no hay paleta clara alternativa: mantener una
+   segunda version en claro contradiria el documento y duplicaria cada decision.
+   Se declara `color-scheme: dark` para que los controles nativos del navegador
+   -scrollbars, selector de fichero, autocompletado- se pinten en oscuro y no
+   aparezcan cajas blancas dentro de una interfaz negra.
+
+   Regla 60 / 30 / 10 (documento, seccion 02): el 60% es fondo `--night`, el 30%
+   son superficies y contenido, y el 10% es acento. Por eso `--signal` aparece
+   solo en llamadas a la accion, estados activos y foco, nunca como fondo de una
+   zona grande.
    --------------------------------------------------------------------------- */
 
 :root {
-  --surface-1: #f7f8fa;
-  --surface-2: #ffffff;
-  --surface-3: #eef1f5;
-  --border: #d8dde6;
-  --text-1: #14171f;
-  --text-2: #4a5160;
-  --text-3: #7b8494;
-  --accent: #3b5bdb;
-  --accent-soft: #e7ecfd;
+  color-scheme: dark;
 
-  --ok: #1a7f4b;
-  --ok-soft: #e3f5ea;
-  --warn: #9a6700;
-  --warn-soft: #fdf3d7;
-  --err: #b42318;
-  --err-soft: #fdeceb;
-  --idle: #5c6470;
-  --idle-soft: #eceef2;
+  /* --- sistema cromatico (documento, seccion 02) -------------------------- */
+  --night: #0b0d0f;             /* fondo principal */
+  --surface: #15191c;           /* tarjetas y paneles */
+  --elevated: #20262a;          /* hover y superficie elevada */
+  --signal: #43e08b;            /* CTA y estados activos */
+  --pulse: #8b7cff;             /* acento secundario, estados destacados */
+  --text: #f5f7f8;              /* titulos */
+  --muted: #a9b1b6;             /* metadata */
 
-  --radius: 10px;
+  /* Tintes derivados del acento. Se usan a baja opacidad como fondo de estado:
+     un relleno plano de --signal convertiria la interfaz en verde, que es lo
+     primero que el documento prohibe. */
+  --signal-tint: rgba(67, 224, 139, 0.12);
+  --signal-line: rgba(67, 224, 139, 0.45);
+  --pulse-tint: rgba(139, 124, 255, 0.14);
+  --pulse-line: rgba(139, 124, 255, 0.45);
+
+  /* Lineas y separadores: blanco a muy baja opacidad en vez de un gris fijo,
+     para que el mismo token funcione sobre --night y sobre --elevated. */
+  --line: rgba(245, 247, 248, 0.09);
+  --line-strong: rgba(245, 247, 248, 0.16);
+
+  /* --- colores de estado --------------------------------------------------
+     El documento define acento y acento secundario, pero no un ambar ni un
+     rojo, y esta aplicacion necesita distinguir tres veredictos de validacion.
+     Se anaden en la misma clave luminosa sobre fondo oscuro y quedan acotados a
+     distintivos y avisos, fuera del 10% de acento. */
+  --ok: #43e08b;
+  --ok-tint: rgba(67, 224, 139, 0.12);
+  --warn: #f2c14e;
+  --warn-tint: rgba(242, 193, 78, 0.13);
+  --err: #ff6b6b;
+  --err-tint: rgba(255, 107, 107, 0.13);
+  --idle-tint: rgba(245, 247, 248, 0.07);
+
+  /* --- tipografia (documento, seccion 03) --------------------------------- */
+  --font: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  --fs-display: clamp(2rem, 1.2rem + 2.4vw, 2.5rem);   /* 32-40 px */
+  --fs-h1: clamp(1.5rem, 1.2rem + 1vw, 1.75rem);       /* 24-28 px */
+  --fs-h2: 1.19rem;                                    /* 19 px    */
+  --fs-body: 0.94rem;                                  /* 15 px    */
+  --fs-meta: 0.79rem;                                  /* 12.6 px  */
+
+  /* --- forma y ritmo (documento, secciones 04 y 05) ----------------------- */
+  --radius: 12px;               /* tarjetas y CTA */
+  --radius-sm: 8px;             /* controles pequenos */
+  --gutter: 24px;               /* desktop */
+  --container: 1440px;
+  --cta-height: 46px;           /* 44-48 px */
+
+  --t-micro: 180ms;             /* 150-250 ms: microinteracciones */
+  --t-panel: 320ms;             /* 250-400 ms: paneles y cambios de contexto */
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+
+  --shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+
+  /* Alto de la barra de actividad persistente. El contenido reserva ese hueco
+     al final de la pagina para que el ultimo elemento no quede tapado. */
+  --activity-height: 64px;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --surface-1: #14161c;
-    --surface-2: #1b1e26;
-    --surface-3: #23262f;
-    --border: #333844;
-    --text-1: #eef0f4;
-    --text-2: #b3bac6;
-    --text-3: #838c9b;
-    --accent: #7f9cff;
-    --accent-soft: #22304f;
+@media (max-width: 720px) {
+  :root { --gutter: 16px; }
+}
 
-    --ok: #56d49a;
-    --ok-soft: #12301f;
-    --warn: #e8c26a;
-    --warn-soft: #33290f;
-    --err: #ff8a80;
-    --err-soft: #3a1614;
-    --idle: #9aa3b0;
-    --idle-soft: #262a33;
+/* El movimiento explica jerarquia y confirma acciones; cuando el sistema pide
+   no animar, se respeta y la interfaz sigue siendo igual de usable. */
+@media (prefers-reduced-motion: reduce) {
+  :root { --t-micro: 0ms; --t-panel: 0ms; }
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
   }
 }
 
 * { box-sizing: border-box; }
 
-html, body {
-  margin: 0;
-  padding: 0;
-  min-height: 100%;
-}
+html, body { margin: 0; padding: 0; min-height: 100%; }
 
 body {
-  background: var(--surface-1);
-  color: var(--text-1);
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  font-size: 15px;
+  background: var(--night);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: var(--fs-body);
   line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
 }
 
-h1 { font-size: 1.45rem; margin: 0 0 0.75rem; }
-h2 { font-size: 1.15rem; margin: 1.5rem 0 0.6rem; }
+/* --- tipografia ---------------------------------------------------------- */
+
+h1, h2, h3 { font-weight: 700; letter-spacing: -0.01em; }
+
+h1 { font-size: var(--fs-h1); margin: 0 0 0.75rem; }
+h2 { font-size: var(--fs-h2); margin: 1.5rem 0 0.6rem; }
 h3 { font-size: 1rem; margin: 1.2rem 0 0.5rem; }
 
-a { color: var(--accent); }
+/* Titular de campana: el unico nivel por encima de h1, reservado a la entrada
+   de cada pantalla. */
+.display {
+  font-size: var(--fs-display);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  margin: 0 0 0.5rem;
+}
+
+.muted { color: var(--muted); }
+.small { font-size: var(--fs-meta); }
+.mono  { font-family: var(--mono); }
+
+/* Metadata: 12-13 px y peso 500, que es lo que el documento reserva a artista,
+   duracion o fecha; aqui son nombres de fichero, sellos de tiempo e intentos. */
+.meta {
+  font-size: var(--fs-meta);
+  font-weight: 500;
+  color: var(--muted);
+}
+
+/* Rotulo de bloque: mayusculas espaciadas para titular una zona sin gastar un
+   nivel tipografico mas, que el documento limita a tres por modulo. */
+.eyebrow {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+a { color: var(--signal); text-decoration-color: var(--signal-line); text-underline-offset: 2px; }
+a:hover { text-decoration-color: var(--signal); }
 
 code, pre { font-family: var(--mono); font-size: 0.88em; }
 
+code { color: var(--muted); }
+
 pre {
-  background: var(--surface-3);
-  padding: 0.75rem 1rem;
-  border-radius: var(--radius);
+  background: var(--night);
+  border: 1px solid var(--line);
+  padding: 0.85rem 1rem;
+  border-radius: var(--radius-sm);
   overflow-x: auto;      /* el codigo largo hace scroll en su caja, no en la pagina */
+}
+
+::selection { background: var(--signal); color: var(--night); }
+
+/* El foco visible es obligatorio (documento, seccion 05) y usa el acento, que
+   es uno de sus tres usos legitimos junto a CTA y estado activo. */
+:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
 /* --- superficies --------------------------------------------------------- */
 
 .card {
-  background: var(--surface-2);
-  border: 1px solid var(--border);
+  background: var(--surface);
+  border: 1px solid var(--line);
   border-radius: var(--radius);
-  padding: 1.25rem;
+  padding: 1.35rem;
 }
 
-.muted { color: var(--text-2); }
-.small { font-size: 0.85rem; }
-.mono  { font-family: var(--mono); }
+/* Baldosa de dato: bloque compacto de rotulo y valor para las metricas de un
+   trabajo o de un bundle. */
+.tile {
+  background: var(--night);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 0.7rem 0.85rem;
+}
+.tile-label {
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 0.2rem;
+}
+.tile-value { font-size: 1rem; font-weight: 600; }
 
 /* --- botones ------------------------------------------------------------- */
 
 button {
   font: inherit;
+  font-weight: 600;
   cursor: pointer;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   border: 1px solid transparent;
   padding: 0.5rem 0.9rem;
-  transition: background 0.12s ease, border-color 0.12s ease;
+  color: var(--text);
+  background: transparent;
+  transition: background var(--t-micro) var(--ease), border-color var(--t-micro) var(--ease),
+              color var(--t-micro) var(--ease), transform var(--t-micro) var(--ease);
 }
 
-button:disabled { opacity: 0.55; cursor: not-allowed; }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+button:active:not(:disabled) { transform: translateY(1px); }
 
-.btn-primary { background: var(--accent); color: #fff; }
-.btn-primary:hover:not(:disabled) { filter: brightness(1.08); }
+/* CTA primaria: relleno --signal con texto --night (11.4:1 de contraste), radio
+   de 12 px y alto de 44-48 px, tal cual la tabla de componentes. */
+.btn-primary {
+  background: var(--signal);
+  color: var(--night);
+  border-radius: var(--radius);
+  min-height: var(--cta-height);
+  padding: 0 1.15rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+.btn-primary:hover:not(:disabled) { background: #5ce79c; }
 
 .btn-secondary {
-  background: var(--surface-3);
-  color: var(--text-1);
-  border-color: var(--border);
+  background: var(--elevated);
+  color: var(--text);
+  border-color: var(--line);
+}
+.btn-secondary:hover:not(:disabled) { background: #262d32; border-color: var(--line-strong); }
+
+.btn-ghost { background: transparent; color: var(--muted); border-color: var(--line); }
+.btn-ghost:hover:not(:disabled) { color: var(--text); border-color: var(--line-strong); }
+
+.btn-danger { background: var(--err-tint); color: var(--err); border-color: rgba(255, 107, 107, 0.4); }
+
+/* Accion dentro de una fila o de una cabecera: 32 px de alto. El minimo de
+   44 px del documento es para la CTA primaria; aplicarlo a los botones de una
+   tabla duplicaria el alto de cada fila y arruinaria la densidad de la lista. */
+.btn--sm {
+  padding: 0.28rem 0.6rem;
+  font-size: var(--fs-meta);
+  min-height: 32px;
+  border-radius: var(--radius-sm);
 }
 
-.btn-ghost { background: transparent; color: var(--text-2); border-color: var(--border); }
-.btn-danger { background: var(--err-soft); color: var(--err); border-color: var(--err); }
+/* Enlace con aspecto de boton: un <a> no hereda los estilos de <button>. */
+.link-btn { display: inline-flex; align-items: center; gap: 0.4rem; text-decoration: none; }
 
 /* --- formularios --------------------------------------------------------- */
 
-label { display: block; font-size: 0.85rem; color: var(--text-2); margin-bottom: 0.3rem; }
+label {
+  display: block;
+  font-size: var(--fs-meta);
+  font-weight: 500;
+  color: var(--muted);
+  margin-bottom: 0.35rem;
+}
 
-input[type="text"], input[type="email"], input[type="password"] {
+input[type="text"], input[type="email"], input[type="password"], input[type="search"] {
   width: 100%;
   font: inherit;
-  padding: 0.55rem 0.7rem;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--surface-1);
-  color: var(--text-1);
+  padding: 0.62rem 0.75rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--night);
+  color: var(--text);
+  transition: border-color var(--t-micro) var(--ease), background var(--t-micro) var(--ease);
 }
+
+input::placeholder { color: #6f777c; }
+input:focus { border-color: var(--signal-line); }
+
+/* Buscador prominente con el icono dentro del campo (documento, seccion 04). */
+.search { position: relative; display: flex; align-items: center; }
+.search .search-icon {
+  position: absolute;
+  left: 0.7rem;
+  display: inline-flex;
+  color: var(--muted);
+  pointer-events: none;
+}
+.search input { padding-left: 2.4rem; }
 
 /* --- distintivos de estado y veredicto ----------------------------------- */
 
+/* El punto no es decoracion: el distintivo tiene que leerse sin depender del
+   color (documento, seccion 05), asi que el estado va en el texto y la forma lo
+   acompana con un punto y un borde propios. */
 .badge {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  font-size: 0.78rem;
+  gap: 0.4rem;
+  font-size: var(--fs-meta);
   font-weight: 600;
-  padding: 0.2rem 0.55rem;
+  padding: 0.22rem 0.6rem;
   border-radius: 999px;
   border: 1px solid transparent;
   white-space: nowrap;
 }
 
-.badge--ok   { background: var(--ok-soft);   color: var(--ok);   border-color: var(--ok); }
-.badge--warn { background: var(--warn-soft); color: var(--warn); border-color: var(--warn); }
-.badge--err  { background: var(--err-soft);  color: var(--err);  border-color: var(--err); }
-.badge--idle { background: var(--idle-soft); color: var(--idle); border-color: var(--border); }
+.badge::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+.badge--ok    { background: var(--ok-tint);    color: var(--ok);    border-color: var(--signal-line); }
+.badge--warn  { background: var(--warn-tint);  color: var(--warn);  border-color: rgba(242, 193, 78, 0.42); }
+.badge--err   { background: var(--err-tint);   color: var(--err);   border-color: rgba(255, 107, 107, 0.42); }
+.badge--idle  { background: var(--idle-tint);  color: var(--muted); border-color: var(--line-strong); }
+.badge--pulse { background: var(--pulse-tint); color: var(--pulse); border-color: var(--pulse-line); }
+
+/* Estado en curso: el punto late para que "procesando" se distinga de un estado
+   final sin tener que leer la etiqueta. */
+.badge--live::before { animation: pulse-dot 1.4s ease-in-out infinite; }
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.35; transform: scale(0.7); }
+}
 
 /* --- tablas -------------------------------------------------------------- */
 
@@ -163,55 +346,125 @@ input[type="text"], input[type="email"], input[type="password"] {
 table.data {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.9rem;
+  font-size: 0.89rem;
 }
 
 table.data th,
 table.data td {
   text-align: left;
-  padding: 0.55rem 0.7rem;
-  border-bottom: 1px solid var(--border);
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--line);
   vertical-align: middle;
 }
 
-table.data th { color: var(--text-2); font-weight: 600; font-size: 0.82rem; }
-table.data tbody tr:hover { background: var(--surface-3); }
+table.data th {
+  color: var(--muted);
+  font-weight: 700;
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+table.data tbody tr { transition: background var(--t-micro) var(--ease); }
+table.data tbody tr:hover { background: var(--elevated); }
+table.data tbody tr:last-child td { border-bottom: none; }
 
 /* --- utilidades ---------------------------------------------------------- */
 
 .row { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
 .spread { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
-.stack { display: flex; flex-direction: column; gap: 1rem; }
+.stack { display: flex; flex-direction: column; gap: var(--gutter); }
+
+/* Rejilla de baldosas: se adapta sola, sin una media query por pantalla. */
+.tiles {
+  display: grid;
+  gap: 0.7rem;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
 
 .alert {
-  border-radius: var(--radius);
-  padding: 0.7rem 0.9rem;
+  border-radius: var(--radius-sm);
+  padding: 0.75rem 0.95rem;
   font-size: 0.88rem;
   border: 1px solid;
+  border-left-width: 3px;
 }
-.alert--err  { background: var(--err-soft);  color: var(--err);  border-color: var(--err); }
-.alert--warn { background: var(--warn-soft); color: var(--warn); border-color: var(--warn); }
-.alert--info { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+.alert--err  { background: var(--err-tint);  color: var(--err);  border-color: rgba(255, 107, 107, 0.42); }
+.alert--warn { background: var(--warn-tint); color: var(--warn); border-color: rgba(242, 193, 78, 0.42); }
+/* El violeta como color secundario de lo destacado e informativo, que es el
+   unico uso que el documento le concede. */
+.alert--info { background: var(--pulse-tint); color: #d3cdff; border-color: var(--pulse-line); }
+.alert--info a, .alert--info code { color: var(--pulse); }
 
 .spinner {
   width: 14px; height: 14px;
-  border: 2px solid var(--border);
-  border-top-color: var(--accent);
+  border: 2px solid var(--line-strong);
+  border-top-color: var(--signal);
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
   display: inline-block;
+  flex: none;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* Barra de progreso, tanto de subida como de actividad. */
+.bar { height: 6px; background: var(--elevated); border-radius: 999px; overflow: hidden; }
+.bar-fill {
+  height: 100%;
+  background: var(--signal);
+  border-radius: 999px;
+  transition: width var(--t-panel) var(--ease);
+}
+
+/* Progreso sin porcentaje conocido: la conversion la ejecuta un worker y no
+   informa de avance, asi que la barra recorre en lugar de mentir con un numero. */
+.bar--indeterminate .bar-fill { width: 35%; animation: slide 1.4s ease-in-out infinite; }
+@keyframes slide {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+
+/* Entrada de paneles y tarjetas al montarse: 320 ms, corta y una sola vez. */
+.enter { animation: enter var(--t-panel) var(--ease) both; }
+@keyframes enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* --- iconografia --------------------------------------------------------- */
+
+/* Iconos lineales de 20-24 px que heredan el color del texto: asi un icono
+   dentro de un elemento activo cambia de color sin una regla por icono. */
+okf-icon { display: inline-flex; flex: none; }
+okf-icon svg { width: 20px; height: 20px; display: block; }
 
 /* --- markdown renderizado ------------------------------------------------ */
 
 .md :first-child { margin-top: 0; }
-.md img { max-width: 100%; height: auto; border-radius: 6px; }
+.md img { max-width: 100%; height: auto; border-radius: var(--radius-sm); }
 .md table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
-.md th, .md td { border: 1px solid var(--border); padding: 0.4rem 0.6rem; }
+.md th, .md td { border: 1px solid var(--line); padding: 0.45rem 0.65rem; }
+.md th { background: var(--night); }
 .md blockquote {
   margin: 0.8rem 0;
   padding: 0.3rem 0 0.3rem 0.9rem;
-  border-left: 3px solid var(--border);
-  color: var(--text-2);
+  border-left: 3px solid var(--signal-line);
+  color: var(--muted);
 }
+.md hr { border: none; border-top: 1px solid var(--line); margin: 1.4rem 0; }
+.md code { background: var(--night); padding: 0.1rem 0.3rem; border-radius: 4px; }
+.md pre code { background: none; padding: 0; }
+
+/* --- scrollbars ---------------------------------------------------------- */
+
+/* Sin esto WebKit pinta barras claras sobre los paneles oscuros, y rompen la
+   continuidad justo donde mas se nota: el visor de bundles. */
+* { scrollbar-width: thin; scrollbar-color: var(--elevated) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--elevated);
+  border-radius: 999px;
+  border: 2px solid var(--night);
+}
+::-webkit-scrollbar-thumb:hover { background: #2c343a; }

@@ -5,29 +5,39 @@ import { Subscription } from 'rxjs';
 
 import { ApiService } from '../../core/api.service';
 import { Finding, JobView, isRetryable, isTerminal } from '../../core/models';
+import { IconComponent } from '../../shared/icon.component';
 import { StatusBadgeComponent, VerdictBadgeComponent } from '../../shared/status-badge.component';
 import { describeError } from '../auth/login.component';
 
 @Component({
   selector: 'okf-job-detail',
   standalone: true,
-  imports: [RouterLink, DatePipe, JsonPipe, StatusBadgeComponent, VerdictBadgeComponent],
+  imports: [
+    RouterLink,
+    DatePipe,
+    JsonPipe,
+    IconComponent,
+    StatusBadgeComponent,
+    VerdictBadgeComponent,
+  ],
   template: `
-    <a routerLink="/" class="small">&larr; Volver al panel</a>
+    <a routerLink="/" class="back">
+      <okf-icon name="back" />
+      Volver al panel
+    </a>
 
     @if (error()) {
-      <div class="alert alert--err" style="margin-top:1rem">{{ error() }}</div>
+      <div class="alert alert--err top">{{ error() }}</div>
     }
 
     @if (job(); as j) {
-      <div class="stack" style="margin-top:1rem">
+      <div class="stack top">
         <!-- ------------------------------------------------ resumen -------- -->
-        <section class="card">
+        <section class="card enter">
           <div class="spread">
-            <div>
-              <h1 style="margin-bottom:0.35rem">
-                {{ j.document_filename || 'Trabajo' }}
-              </h1>
+            <div class="ident">
+              <p class="eyebrow">Trabajo</p>
+              <h1 class="title">{{ j.document_filename || 'Trabajo' }}</h1>
               <code class="small">{{ j.id }}</code>
             </div>
             <div class="row">
@@ -41,18 +51,29 @@ import { describeError } from '../auth/login.component';
             </div>
           </div>
 
-          <div class="grid">
-            <div><span class="muted small">Intento</span><br />{{ j.attempt }} de {{ j.max_attempts }}</div>
-            <div><span class="muted small">Reclamaciones</span><br />{{ j.claim_count }}</div>
-            <div><span class="muted small">Creado</span><br />{{ j.created_at | date: 'dd/MM/yy HH:mm:ss' }}</div>
-            <div>
-              <span class="muted small">Finalizado</span><br />
-              {{ j.finished_at ? (j.finished_at | date: 'dd/MM/yy HH:mm:ss') : '—' }}
+          <div class="tiles">
+            <div class="tile">
+              <span class="tile-label">Intento</span>
+              <span class="tile-value">{{ j.attempt }} de {{ j.max_attempts }}</span>
+            </div>
+            <div class="tile">
+              <span class="tile-label">Reclamaciones</span>
+              <span class="tile-value">{{ j.claim_count }}</span>
+            </div>
+            <div class="tile">
+              <span class="tile-label">Creado</span>
+              <span class="tile-value">{{ j.created_at | date: 'dd/MM/yy HH:mm:ss' }}</span>
+            </div>
+            <div class="tile">
+              <span class="tile-label">Finalizado</span>
+              <span class="tile-value">
+                {{ j.finished_at ? (j.finished_at | date: 'dd/MM/yy HH:mm:ss') : '—' }}
+              </span>
             </div>
             @if (j.okf_score !== undefined && j.okf_score !== null) {
-              <div>
-                <span class="muted small">Conformidad OKF</span><br />
-                {{ j.okf_score }}/100 · grado {{ j.okf_grade }}
+              <div class="tile">
+                <span class="tile-label">Conformidad OKF</span>
+                <span class="tile-value">{{ j.okf_score }}/100 · grado {{ j.okf_grade }}</span>
               </div>
             }
           </div>
@@ -63,12 +84,13 @@ import { describeError } from '../auth/login.component';
             </div>
           }
 
-          <div class="row" style="margin-top:1rem">
+          <div class="row actions">
             @if (j.bundle_id) {
               <a class="btn-primary link-btn" [routerLink]="['/bundles', j.bundle_id]">
                 Abrir el bundle
               </a>
               <button type="button" class="btn-secondary" (click)="download(j.bundle_id!)">
+                <okf-icon name="download" />
                 Descargar ZIP
               </button>
             }
@@ -93,8 +115,9 @@ import { describeError } from '../auth/login.component';
         <!-- ------------------------------------ validacion y hallazgos ----- -->
         @if (j.validation_report; as rep) {
           <section class="card">
-            <h2 style="margin-top:0">Validacion del bundle</h2>
-            <p class="muted small">
+            <p class="eyebrow">Validacion</p>
+            <h2 class="h2-flush">Validacion del bundle</h2>
+            <p class="muted note">
               Se evaluaron {{ rep.rules_evaluated }} reglas. La validez de
               plataforma decide si el bundle se publica; la conformidad OKF es una
               medida de calidad que no bloquea la publicacion.
@@ -106,8 +129,10 @@ import { describeError } from '../auth/login.component';
                 @for (f of platformErrors(); track f.code + f.path) {
                   <li>
                     <span class="badge badge--err">{{ f.code }}</span>
-                    {{ f.message }}
-                    @if (f.path) { <code class="small">{{ f.path }}</code> }
+                    <span class="fmsg">
+                      {{ f.message }}
+                      @if (f.path) { <code class="small">{{ f.path }}</code> }
+                    </span>
                   </li>
                 }
               </ul>
@@ -119,8 +144,10 @@ import { describeError } from '../auth/login.component';
                 @for (f of platformWarnings(); track f.code + f.path) {
                   <li>
                     <span class="badge badge--warn">{{ f.code }}</span>
-                    {{ f.message }}
-                    @if (f.path) { <code class="small">{{ f.path }}</code> }
+                    <span class="fmsg">
+                      {{ f.message }}
+                      @if (f.path) { <code class="small">{{ f.path }}</code> }
+                    </span>
                   </li>
                 }
               </ul>
@@ -128,26 +155,29 @@ import { describeError } from '../auth/login.component';
 
             @if (okfFindings().length > 0) {
               <h3>Conformidad OKF (informativo)</h3>
+              <!-- El eje informativo usa el acento secundario: es lo destacado
+                   que no bloquea, y el documento reserva el violeta justo a eso. -->
               <ul class="findings">
                 @for (f of okfFindings(); track f.code) {
                   <li>
-                    <span class="badge badge--idle">{{ f.code }}</span>
-                    {{ f.message }}
+                    <span class="badge badge--pulse">{{ f.code }}</span>
+                    <span class="fmsg">{{ f.message }}</span>
                   </li>
                 }
               </ul>
             }
 
             @if (platformErrors().length === 0 && platformWarnings().length === 0) {
-              <p class="badge badge--ok">Todas las reglas obligatorias se superaron</p>
+              <p class="badge badge--ok clean">Todas las reglas obligatorias se superaron</p>
             }
           </section>
         }
 
         <!-- ------------------------------------------- linea de tiempo ----- -->
         <section class="card">
-          <h2 style="margin-top:0">Linea de tiempo</h2>
-          <p class="muted small">
+          <p class="eyebrow">Traza</p>
+          <h2 class="h2-flush">Linea de tiempo</h2>
+          <p class="muted note">
             Traza auditable del trabajo. Los eventos los escribe el worker en la
             base de datos, de modo que sobreviven al reinicio de cualquier
             contenedor.
@@ -166,30 +196,61 @@ import { describeError } from '../auth/login.component';
         </section>
       </div>
     } @else if (!error()) {
-      <p class="muted" style="margin-top:1rem">Cargando…</p>
+      <p class="muted top row"><span class="spinner"></span> Cargando…</p>
     }
   `,
   styles: `
-    .grid {
-      display: grid; gap: 0.9rem; margin-top: 1rem;
-      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    .back {
+      display: inline-flex; align-items: center; gap: 0.3rem;
+      color: var(--muted); text-decoration: none; font-size: var(--fs-meta); font-weight: 600;
     }
-    .link-btn { display: inline-block; text-decoration: none; }
+    .back:hover { color: var(--text); }
+    .top { margin-top: 1rem; }
+
+    .ident { min-width: 0; }
+    .title { margin: 0 0 0.35rem; }
+    .h2-flush { margin: 0 0 0.4rem; }
+    .note { margin: 0 0 1.1rem; max-width: 78ch; }
+    .tiles { margin-top: 1.1rem; }
+    .actions { margin-top: 1.15rem; }
+    .actions button { display: inline-flex; align-items: center; gap: 0.4rem; }
+    .clean { margin-top: 0.5rem; }
+
     .findings { list-style: none; padding: 0; margin: 0.5rem 0 0; }
     .findings li {
-      display: flex; align-items: flex-start; gap: 0.5rem;
-      padding: 0.4rem 0; border-bottom: 1px solid var(--border); font-size: 0.9rem;
+      display: flex; align-items: flex-start; gap: 0.6rem;
+      padding: 0.55rem 0; border-bottom: 1px solid var(--line); font-size: 0.9rem;
     }
+    .findings li:last-child { border-bottom: none; }
+    .fmsg { min-width: 0; }
+
+    /* Linea de tiempo con carril: la regla vertical y el punto de cada evento
+       explican la continuidad de la traza mejor que una lista suelta, y no
+       dependen del color para leerse. */
     .timeline { list-style: none; padding: 0; margin: 0.5rem 0 0; }
     .timeline li {
-      display: grid; grid-template-columns: 90px 200px 1fr; gap: 0.6rem;
-      padding: 0.35rem 0; border-bottom: 1px solid var(--border); align-items: baseline;
+      position: relative;
+      display: grid; grid-template-columns: 92px 210px minmax(0, 1fr); gap: 0.7rem;
+      padding: 0.4rem 0 0.4rem 1.15rem;
+      align-items: baseline;
+      border-left: 1px solid var(--line);
     }
+    .timeline li::before {
+      content: "";
+      position: absolute; left: -4px; top: 0.95em;
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--elevated);
+      border: 1px solid var(--line-strong);
+    }
+    /* Solo el ultimo evento lleva el acento: es el estado actual del trabajo. */
+    .timeline li:last-child::before { background: var(--signal); border-color: var(--signal); }
+    .timeline li:first-child { padding-top: 0.2rem; }
     .timeline .type { font-weight: 600; font-size: 0.87rem; }
     .timeline .detail { overflow-wrap: anywhere; }
     .alert { margin-top: 0.9rem; }
+
     @media (max-width: 720px) {
-      .timeline li { grid-template-columns: 1fr; gap: 0.15rem; }
+      .timeline li { grid-template-columns: minmax(0, 1fr); gap: 0.15rem; }
     }
   `,
 })

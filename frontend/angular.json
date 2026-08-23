@@ -20,7 +20,14 @@
             "assets": [
               { "glob": "**/*", "input": "public" }
             ],
-            "styles": ["src/styles.scss"],
+            "styles": [
+              "node_modules/@fontsource/inter/latin-400.css",
+              "node_modules/@fontsource/inter/latin-500.css",
+              "node_modules/@fontsource/inter/latin-600.css",
+              "node_modules/@fontsource/inter/latin-700.css",
+              "node_modules/@fontsource/inter/latin-800.css",
+              "src/styles.scss"
+            ],
             "server": false,
             "ssr": false,
             "prerender": false
@@ -40,8 +47,15 @@
                 }
               ],
               "outputHashing": "all",
-              "optimization": true,
-              "sourceMap": false
+              "sourceMap": false,
+              "optimization": {
+                "scripts": true,
+                "fonts": true,
+                "styles": {
+                  "minify": true,
+                  "inlineCritical": false
+                }
+              }
             },
             "development": {
               "optimization": false,

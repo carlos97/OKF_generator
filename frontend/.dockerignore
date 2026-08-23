@@ -1,0 +1,11 @@
+# El contexto de construccion de esta imagen es solo frontend/, asi que el
+# .dockerignore de la raiz no se aplica aqui.
+#
+# Sin este fichero, el `COPY . .` del Dockerfile mete node_modules, dist y
+# .angular del host en la capa y ademas PISA el resultado de `npm ci`: la imagen
+# dejaria de depender del lockfile y pasaria a depender de lo que hubiera
+# instalado en la maquina de quien construye, que es la clase de diferencia que
+# solo aparece cuando construye otra persona.
+node_modules
+dist
+.angular
